@@ -172,7 +172,18 @@ def main():
     if bad:
         print(f"\n失败 {len(bad)} 个：")
         for r in bad:
-            print(f"  {(r.email or '(未建邮箱)'):42s} {r.error[:90]}")
+            print(f"  {(r.email or '(未建邮箱)'):42s} {(r.error or '')[:90]}")
+
+        # 🔴 注册配额触顶是批量失败最常见的原因，且**重试无用**。
+        #    实测（2026-09-15）：同一时段累计注册约 40 个账号后开始出现
+        #    `B0000 请求频繁`，之后**连单账号都注册不了**，等了几分钟仍未恢复。
+        #    ⚠ 它是**累计量**级别的限制 —— 调大 REG_MIN_INTERVAL（瞬时速率闸门）
+        #      完全无效，不要往那个方向排查。
+        quota = [r for r in bad if "B0000" in (r.error or "")]
+        if quota:
+            print(f"\n  ⚠ 其中 {len(quota)} 个是注册配额触顶（B0000 请求频繁）")
+            print(f"    这是**累计量**限制，不是瞬时速率 —— 调 REG_MIN_INTERVAL 无效。")
+            print(f"    实测：同一时段累计约 40 个账号后触发，需等待窗口恢复后再跑。")
 
     if ok:
         print(f"\n调用方式（OpenAI 兼容）：")
