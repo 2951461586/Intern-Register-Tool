@@ -12,6 +12,8 @@ results.json
 keys.json
 accounts.json
 *.json
+*.txt
+!requirements.txt
 
 # 过程截图（`--shot` 产物）
 *.png

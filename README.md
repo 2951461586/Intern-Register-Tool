@@ -42,11 +42,21 @@ python run.py --shot debug
 
 ### 环境变量
 
-**凭据（必填）**
+**凭据（必填，二选一）**
 
 | 变量 | 默认 | 说明 |
 |------|------|------|
 | `IR_WORKER_ADMIN_TOKEN` | **无 —— 必填** | CF Worker 的 Admin Token。缺失时启动阶段即报错退出 |
+| `IR_YYDS_API_KEY` | **无** | YYDS Mail 的 API Key（`IR_MAIL_PROVIDER=yyds` 时必填） |
+
+**临时邮箱提供者**
+
+| 变量 | 默认 | 说明 |
+|------|------|------|
+| `IR_MAIL_PROVIDER` | `worker` | `worker` = CF Worker 临时邮箱；`yyds` = YYDS Mail 临时邮箱 |
+| `IR_YYDS_BASE_URL` | `https://maliapi.215.im/v1` | YYDS Mail API 地址 |
+| `IR_YYDS_DOMAIN` | 空（API 默认） | 建邮箱使用的域名（可选） |
+| `IR_YYDS_SUBDOMAIN` | 空 | 建邮箱使用的子域名（可选） |
 
 **可选（都有实测默认值，通常不用动）**
 
@@ -84,6 +94,9 @@ src/
   config.py            配置与常量（.env 加载、启动校验、模型清单）
   crypto_rsa.py        RSA 密码加密（复刻前端逻辑）
   tempmail.py          CF Worker 临时邮箱客户端（自适应轮询窗口）
+  base.py              临时邮箱提供者抽象基类（MailProvider）
+  yydsmail.py          YYDS Mail 临时邮箱提供者（验证码 / 激活链接提取）
+  yyds_client.py       YYDS Mail 适配器（兼容 TempMailClient 接口）
   sso.py               SSO 注册 / 激活
   browser_login.py     浏览器登录 + 验证码处理 + JWT 提取
   discovery.py         discovery 平台（额度 / API Key）

@@ -46,6 +46,24 @@ from .discovery import DiscoveryClient
 from .sso import SSOClient
 from .tempmail import TempMailClient
 
+
+def create_mail_client():
+    """按配置返回临时邮箱客户端（worker=CF Worker，yyds=YYDS Mail）。
+
+    两者接口兼容：create_mailbox(domain, count) -> list[str]，
+    wait_for_mail(address) -> 带 find_link / received_at 的邮件对象。
+    """
+    if config.MAIL_PROVIDER == "yyds":
+        from .yyds_client import YydsMailClient
+
+        return YydsMailClient(
+            api_key=config.YYDS_API_KEY,
+            base_url=config.YYDS_BASE_URL,
+            domain=config.YYDS_DOMAIN,
+            subdomain=config.YYDS_SUBDOMAIN,
+        )
+    return TempMailClient()
+
 # 注册阶段的并发度。纯 HTTP，可以给得比浏览器侧高。
 # 注意：并发度 ≠ 注册速率 —— 速率由下面的 REG_MIN_INTERVAL 闸门控制。
 REG_CONCURRENCY = 4
@@ -360,7 +378,7 @@ def run_one(*, headless: bool = False, key_name: str = "default",
             print(f"    {msg}", flush=True)
 
     t0 = time.time()
-    mail, sso = TempMailClient(), SSOClient()
+    mail, sso = create_mail_client(), SSOClient()
     if not stage_register(mail, sso, rec, mail_domain=mail_domain, log=log):
         return rec
 
@@ -471,7 +489,7 @@ def run_batch(*, count: int, workers: int = 2, headless: bool = False,
         results[idx] = rec
         log = make_log(idx)
         try:
-            mail, sso = TempMailClient(), SSOClient()
+            mail, sso = create_mail_client(), SSOClient()
             stage_register(mail, sso, rec, mail_domain=mail_domain, log=log,
                            gate=reg_gate)
         except Exception as ex:

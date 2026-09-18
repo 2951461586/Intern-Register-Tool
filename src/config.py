@@ -41,6 +41,17 @@ WORKER_BASE = os.getenv("IR_WORKER_BASE", "https://temp-email-worker.zhuhaoyi181
 WORKER_ADMIN_TOKEN = os.getenv("IR_WORKER_ADMIN_TOKEN", "")
 WORKER_DOMAIN = os.getenv("IR_WORKER_DOMAIN", "liziai.cloud")
 
+# ── 临时邮箱提供者选择 ───────────────────────────────────────────
+# 可选值：worker（CF Worker，默认）| yyds（YYDS Mail）
+# 选 yyds 时需配置 YYDS_API_KEY，且不再要求 WORKER_ADMIN_TOKEN。
+MAIL_PROVIDER = os.getenv("IR_MAIL_PROVIDER", "worker").strip().lower()
+
+# ── YYDS Mail 临时邮箱 ───────────────────────────────────────────
+YYDS_API_KEY = os.getenv("IR_YYDS_API_KEY", "")
+YYDS_BASE_URL = os.getenv("IR_YYDS_BASE_URL", "https://maliapi.215.im/v1")
+YYDS_DOMAIN = os.getenv("IR_YYDS_DOMAIN", "")
+YYDS_SUBDOMAIN = os.getenv("IR_YYDS_SUBDOMAIN", "")
+
 # ── OpenXLab SSO ─────────────────────────────────────────────────
 SSO_BASE = "https://sso.openxlab.org.cn"
 SSO_GW = f"{SSO_BASE}/gw/uaa-be/api/v1"
@@ -131,7 +142,11 @@ def validate(*, need_worker_token: bool = True) -> list[str]:
     由入口显式调用，报错时直接给出修法。
     """
     missing = []
-    if need_worker_token and not WORKER_ADMIN_TOKEN:
-        missing.append("IR_WORKER_ADMIN_TOKEN")
+    if MAIL_PROVIDER == "yyds":
+        if not YYDS_API_KEY:
+            missing.append("IR_YYDS_API_KEY")
+    else:
+        if need_worker_token and not WORKER_ADMIN_TOKEN:
+            missing.append("IR_WORKER_ADMIN_TOKEN")
     return missing
 
