@@ -43,10 +43,18 @@ class RegisterResult:
 
 
 class SSOClient:
-    def __init__(self, timeout: int = None):
+    def __init__(self, timeout: int = None, proxy: str = None):
         self.gw = config.SSO_GW
         self.timeout = timeout or config.REQUEST_TIMEOUT
         self.session = requests.Session()
+        # 出口代理。目标站点的封禁是 IP 维度，换 IP 靠这里。
+        # `proxy` 传具体值时只作用于这个 client（槽位池并发场景必须这样用 ——
+        # 改全局 `config.IR_PROXY` 在多个 producer 之间会互相踩）；
+        # 传 None 时退回全局 `IR_PROXY`。
+        # 注意 `apply_proxy` 会同时关掉 `trust_env` —— 否则环境里的
+        # `HTTP_PROXY`（本机是 Clash）会把我们指定的代理**静默盖掉**。
+        config.apply_proxy(self.session, proxy)
+        self.proxy = proxy
         self.session.headers.update({
             "Accept": "application/json, text/plain, */*",
             "Content-Type": "application/json",

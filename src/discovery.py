@@ -55,6 +55,9 @@ class DiscoveryClient:
         self.jwt = jwt
         self.timeout = timeout or config.REQUEST_TIMEOUT
         self.session = requests.Session()
+        # 出口代理（`IR_PROXY`）。目标站点的封禁是 IP 维度，换 IP 靠这里。
+        # `apply_proxy` 会同时关掉 `trust_env`，理由见它的 docstring。
+        config.apply_proxy(self.session)
         self.session.headers.update({
             "Accept": "application/json, text/plain, */*",
             "Content-Type": "application/json",

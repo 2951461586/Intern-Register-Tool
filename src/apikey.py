@@ -29,6 +29,19 @@ class ChatResult:
     model: str = ""
     usage: dict = field(default_factory=dict)
     error: str = ""
+    # 🔴 `ok=True` 只代表"网关接受了并给了 choices"，**不代表正文非空**。
+    # 本项目实测（2026-09-16）：`deepseek-v4-flash-0731` 是**带 reasoning 的模型**，
+    # 响应里除了 `content` 还有 `reasoning_content`。`max_tokens=32` 时
+    # `reasoning_tokens` 就吃了 34 → `content` 空、`finish_reason="length"`。
+    # 只看 `ok` 会把这种情况当成"模型没说话"；有 finish_reason 才能分辨
+    # "被截断"和"真的没内容"。
+    finish_reason: str = ""
+    reasoning: str = ""
+
+    @property
+    def truncated(self) -> bool:
+        """正文被 max_tokens 截断（不是 key 或模型的问题）。"""
+        return self.finish_reason == "length"
 
 
 def _headers(key: str) -> dict:
@@ -38,7 +51,8 @@ def _headers(key: str) -> dict:
 def list_models(key: str, timeout: int = 30) -> list[str]:
     """列出该 key 可用的模型 id。"""
     r = requests.get(f"{config.CHAT_API_BASE}/models",
-                     headers=_headers(key), timeout=timeout)
+                     headers=_headers(key), timeout=timeout,
+                     proxies=config.proxies())
     r.raise_for_status()
     return [m.get("id", "") for m in (r.json().get("data") or []) if m.get("id")]
 
@@ -78,6 +92,7 @@ def chat(key: str, prompt: str, *, model: str = None, timeout: int = 180,
             json={"model": model, "max_tokens": max_tokens,
                   "messages": [{"role": "user", "content": prompt}]},
             timeout=timeout,
+            proxies=config.proxies(),
         )
         if r.status_code != 200:
             return ChatResult(ok=False, model=model, error=f"{r.status_code} {r.text[:200]}")
@@ -85,7 +100,11 @@ def chat(key: str, prompt: str, *, model: str = None, timeout: int = 180,
         choices = d.get("choices") or []
         if not choices:
             return ChatResult(ok=False, model=model, error=f"no choices: {str(d)[:200]}")
-        return ChatResult(ok=True, text=choices[0].get("message", {}).get("content", ""),
-                          model=d.get("model", model), usage=d.get("usage") or {})
+        ch0 = choices[0] or {}
+        msg = ch0.get("message") or {}
+        return ChatResult(ok=True, text=msg.get("content") or "",
+                          model=d.get("model", model), usage=d.get("usage") or {},
+                          finish_reason=ch0.get("finish_reason") or "",
+                          reasoning=msg.get("reasoning_content") or "")
     except Exception as ex:
         return ChatResult(ok=False, model=model, error=f"{type(ex).__name__}: {ex}"[:200])
