@@ -18,13 +18,16 @@
 
 判据
 ----
-从 `tests/test_*.py` 出发，递归展开 `src/` 的**模块级** import，
+从 `tests/` 的**全部 pytest 入口**（`test_*.py` **和** `conftest.py` —— 后者被
+pytest 无条件导入，同样在收集路径上）出发，递归展开 `src/` 的**模块级** import，
 收集所有「非 stdlib、非本项目」的顶层包名，断言：
 
     found ⊆ ALLOWED
 
 ⚠ 只看模块级 import —— 函数体内的延迟 import（如 `playwright`）在收集测试时
   不会执行到，所以不算测试链依赖。这正是"零 playwright"能成立的原因。
+  「模块级」按**执行语义**算：包在 `try:` 里的 import 照样执行（算），
+  包在 `if TYPE_CHECKING:` 里的不执行（不算）。见 `_module_level_imports`。
 """
 
 from __future__ import annotations
@@ -87,6 +90,49 @@ def _resolve_relative(pkg_parts: list[str], level: int, module: str | None) -> s
     return ".".join([*base, module]) if module else ".".join(base)
 
 
+def _is_type_checking_test(node: ast.expr) -> bool:
+    """判定 `if TYPE_CHECKING:` / `if typing.TYPE_CHECKING:`。
+
+    ⚠ 这类块里的 import **运行时不执行**（只给类型检查器看），算进来会把
+      "零 playwright"之类的边界变成假阳性。
+    """
+    if isinstance(node, ast.Name):
+        return node.id == "TYPE_CHECKING"
+    return isinstance(node, ast.Attribute) and node.attr == "TYPE_CHECKING"
+
+
+def _module_level_imports(stmts: list[ast.stmt]) -> list[ast.stmt]:
+    """挑出**模块级会执行**的 import 语句（含包在 `try:` / `if:` 里的）。
+
+    🔴 为什么不能只看 `tree.body` 的第一层：`try: import x / except ImportError: ...`
+      是给**可选依赖**加护栏的常见写法，而那条 `import x` 在收集测试时
+      **照样执行**。只扫第一层会让它从依赖面上消失 —— 于是 CI 红、本地绿，
+      正是本测试要消灭的那个失败模式。**漏掉它等于给这个断言留了后门。**
+
+    ⚠ 不往 `FunctionDef` / `ClassDef` 里递归：函数体内的 import 在**导入模块**时
+      不执行 —— `src/browser/session.py` 的 `playwright` 就靠这一点才算"不在链上"。
+
+    ⚠ `Try` 的四个分支全算（fail-closed）：`body` 一定会执行，`handlers` /
+      `orelse` / `finalbody` 按条件执行。**可能**执行的依赖也算依赖 ——
+      宁可多报一个（本地就红），也不要漏一个（CI 才红）。
+    """
+    out: list[ast.stmt] = []
+    for node in stmts:
+        if isinstance(node, (ast.Import, ast.ImportFrom)):
+            out.append(node)
+        elif isinstance(node, ast.Try):
+            out += _module_level_imports(node.body)
+            for h in node.handlers:
+                out += _module_level_imports(h.body)
+            out += _module_level_imports(node.orelse)
+            out += _module_level_imports(node.finalbody)
+        elif isinstance(node, ast.If) and not _is_type_checking_test(node.test):
+            out += _module_level_imports(node.body)
+            out += _module_level_imports(node.orelse)
+        # 其余（FunctionDef / ClassDef / With / 赋值 ...）：不递归
+    return out
+
+
 def _collect(path: Path, chain: tuple[str, ...], found: dict[str, str],
              visited: set[str]) -> None:
     """递归扫描一个文件的**模块级** import。
@@ -105,7 +151,7 @@ def _collect(path: Path, chain: tuple[str, ...], found: dict[str, str],
 
     pkg_parts = _pkg_parts(path)
 
-    for node in tree.body:                                 # ⚠ 只扫模块级
+    for node in _module_level_imports(tree.body):
         candidates: list[str] = []
 
         if isinstance(node, ast.Import):
@@ -141,12 +187,39 @@ def _collect(path: Path, chain: tuple[str, ...], found: dict[str, str],
             found.setdefault(top, " → ".join(chain + (mod,)))
 
 
+def _test_chain_entry_points() -> list[Path]:
+    """测试链的**入口**文件。
+
+    🔴 必须包含 `conftest.py`：pytest 在收集阶段就会导入它（而且每次运行都导入），
+       它里面的模块级 import 和 `test_*.py` 一样会进 CI 的收集路径。
+       只扫 `test_*.py` 会漏掉这个面 —— 而那正是"本地绿、CI 红"的入口形态。
+
+    ⚠ 用 `rglob` 而不是 `glob`：将来 `tests/` 下分了子目录，子目录的
+      `conftest.py` 同样会被 pytest 导入，同样必须扫。
+    """
+    tests_dir = ROOT / "tests"
+    return sorted({*tests_dir.glob("test_*.py"), *tests_dir.rglob("conftest.py")})
+
+
 def _third_party_of_test_chain() -> dict[str, str]:
     found: dict[str, str] = {}
     visited: set[str] = set()
-    for t in sorted((ROOT / "tests").glob("test_*.py")):
+    for t in _test_chain_entry_points():
         _collect(t, (t.relative_to(ROOT).as_posix(),), found, visited)
     return found
+
+
+def test_conftest_is_part_of_the_scanned_test_chain():
+    """`conftest.py` 必须在扫描面里 —— 它是被 pytest 无条件导入的。
+
+    这条是给**扫描器自己**的守卫：上面那个 `rglob("conftest.py")` 被谁删掉，
+    依赖面就悄悄少一块，而所有断言仍然全绿（假绿）。
+    """
+    names = {p.relative_to(ROOT).as_posix() for p in _test_chain_entry_points()}
+    assert "tests/conftest.py" in names, (
+        f"扫描面里没有 tests/conftest.py：{sorted(names)}\n"
+        "它被 pytest 每次运行都导入，漏扫 = 依赖面存在无人看守的缺口。"
+    )
 
 
 def test_test_chain_third_party_is_within_the_declared_allowlist():
@@ -192,20 +265,36 @@ def test_playwright_never_enters_the_test_chain():
 def test_the_scanner_itself_detects_a_planted_dependency(tmp_path):
     """变异验证：证明扫描器**真的会拦**，而不是永远为真。
 
-    ⚠ 没有这条，上面两个断言可能因为"扫描器坏了、什么都扫不到"而永远通过 ——
+    ⚠ 没有这条，上面几个断言可能因为"扫描器坏了、什么都扫不到"而永远通过 ——
       那是最糟的假绿。
 
-    一次同时验证三条边界：
-      1. 模块级的第三方 import **必须被抓**；
-      2. stdlib **不许**误报；
-      3. **函数体内**的 import 不许算进来 —— 否则 `playwright` 之类的
-         延迟 import 会变成假阳性，而"零 playwright"正是 ci.yml 不装
-         `-r requirements.txt` 的唯一理由。
+    一次钉住五条边界：
+
+      | 形态                                  | 期望 |
+      |---------------------------------------|------|
+      | 模块级 `import x`                     | 抓   |
+      | `import os`（stdlib）                 | 不报 |
+      | 函数体内 `import x`                   | 不报 |
+      | `try: import x / except ImportError`  | 抓   |
+      | `if TYPE_CHECKING: import x`          | 不报 |
+
+    🔴 第 4 条是 2026-09-19 补的：`try:` 包着的 import 在收集测试时**照样执行**，
+      只扫 `tree.body` 第一层会漏掉它 —— 那就是给这个断言留了个后门
+      （本地绿、CI 红，正是要消灭的那个形态）。
     """
     fake = tmp_path / "planted.py"
     fake.write_text(
         "import os\n"
         "import totally_made_up_pkg_xyz\n"
+        "from typing import TYPE_CHECKING\n"
+        "\n"
+        "try:\n"
+        "    import guarded_made_up_pkg\n"
+        "except ImportError:\n"
+        "    guarded_made_up_pkg = None\n"
+        "\n"
+        "if TYPE_CHECKING:\n"
+        "    import typing_only_pkg\n"
         "\n"
         "\n"
         "def f():\n"
@@ -217,10 +306,18 @@ def test_the_scanner_itself_detects_a_planted_dependency(tmp_path):
     _collect(fake, ("planted.py",), found, set())
 
     assert "totally_made_up_pkg_xyz" in found, "扫描器漏掉了模块级第三方 import"
+    assert "guarded_made_up_pkg" in found, (
+        "扫描器漏掉了 `try:` 里包着的模块级 import —— 它在收集测试时照样执行，"
+        "漏掉它等于给这个断言留后门"
+    )
     assert "os" not in found, "扫描器把 stdlib 误报成第三方"
     assert "also_should_not_be_seen" not in found, (
         "扫描器把**函数体内**的 import 也算进来了 —— "
         "那会把 playwright 之类的延迟 import 变成假阳性"
+    )
+    assert "typing_only_pkg" not in found, (
+        "扫描器把 `if TYPE_CHECKING:` 块里的 import 算进来了 —— "
+        "那类 import 运行时不执行，算进来是假阳性"
     )
 
 

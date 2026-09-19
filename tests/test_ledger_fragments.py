@@ -17,24 +17,25 @@
 这些用例钉住的是"字段只增不减"这条**性质**，不是某个具体输出值 ——
 具体输出值另有一条字节级回归（见文件末尾）。
 
+台账从哪来（`any_ledger`）
+--------------------------
+文件末尾两条"整本台账过一遍"的回归用 `any_ledger` 夹具，它**同时**跑两个来源：
+
+  * `ledger_sample` —— 仓库内的脱敏样本，形状复刻真实台账，CI 上靠它跑；
+  * `real_ledger`  —— 本地真实 `results.json`，CI 上不存在 ⇒ 显式跳过。
+
+🔴 2026-09-19 这两条曾经各自 `load_existing(results.json)` 直接读真实台账，
+   而那个文件含凭据、被 `.gitignore` 排除 ⇒ CI 上拿到 `[]` ⇒ 断言 `assert real`
+   失败。**空输入既不能当数据用，也不该让用例炸掉** —— 现在由夹具统一裁决，
+   理由写在 `tests/conftest.py` 里。
+
 跑法：
     pytest tests/test_ledger_fragments.py -v
 """
 
-import pathlib
-
 import pytest
 
 from src import ledger
-
-ROOT = pathlib.Path(__file__).resolve().parents[1]
-RESULTS = ROOT / "results.json"
-
-
-@pytest.fixture(scope="module")
-def real():
-    return ledger.load_existing(RESULTS)
-
 
 # 真实形状的碎片。`SUCCESS` 是流水线结果（rank=2），`EXPORT` 是
 # `export_keys` 的导出行（rank=0，没有 `status`）—— 后者带 source/verify。
@@ -173,18 +174,19 @@ def test_key_order_follows_source_priority():
     assert list(m)[len(SUCCESS):] == [k for k in EXPORT if k not in SUCCESS]
 
 
-def test_real_ledger_records_survive_verbatim(real):
-    """真实台账每一条单独过一遍都必须原样返回（不许被"顺手整理"）。"""
-    assert real, "读不到 results.json"
-    for rec in real:
+def test_every_ledger_record_survives_verbatim(any_ledger):
+    """整本台账每一条单独过一遍都必须原样返回（不许被"顺手整理"）。
+
+    跑两个来源：脱敏样本（任何环境都有）+ 本地真实台账（CI 上跳过）。
+    """
+    for rec in any_ledger:
         assert ledger.merge_fragments([rec]) == rec, rec.get("email")
 
 
-def test_real_ledger_single_source_is_idempotent(real):
+def test_single_source_rebuild_is_idempotent(any_ledger):
     """重建是幂等的：把已合并的台账再当唯一来源过一遍，结果不变。
 
     这一条防的是"每跑一次重建就悄悄改动几个字段" —— 那种漂移最难发现。
     """
-    assert real, "读不到 results.json"
-    again = [ledger.merge_fragments([r]) for r in real]
-    assert again == real
+    again = [ledger.merge_fragments([r]) for r in any_ledger]
+    assert again == any_ledger

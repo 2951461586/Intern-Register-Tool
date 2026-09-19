@@ -54,6 +54,16 @@ accounts.json
 *.jsonl
 *.csv
 
+# 🔴 例外：测试用的**脱敏样本台账**。
+#    上面 `*.json` 是一条无差别规则，会把它一起挡住 —— 而它是**必须入库**的：
+#    `results.json` 含凭据、不入库 ⇒ CI 上读不到 ⇒ 依赖它的用例全部失效
+#    （2026-09-19 CI 第二次变红就是这么来的）。样本是那份数据的**形状替身**，
+#    值全编造、email 只用 RFC 2606 保留域 `example.com`，
+#    由 `tests/test_ledger_sample.py` 逐条钉住（含"不许出现真凭据形态的串"）。
+#
+#    ⚠ 这条例外只放行这一个文件，不放行整个目录 —— 别写成 `!tests/fixtures/*`。
+!tests/fixtures/ledger_sample.json
+
 # 过程截图（`--shot` 产物）
 *.png
 *.jpg

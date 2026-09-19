@@ -10,29 +10,38 @@
 `--count 1` 的探测就把 53 条台账覆盖成了 1 条 —— **静默缩水，没有任何报错**。
 台账已经丢过两次，所以这里宁可多写测试。
 
+台账从哪来（`any_ledger`）
+--------------------------
+T1 / T2 / T7 / T8 需要"一本真实形状的台账"作为基线。基线**不能硬编码条数**
+（台账是活的：每跑一次批量注册就变多，写死 53 的话下次正常注册就会被判
+"测试失败" —— 那是测试在撒谎，不是代码坏了）。所以用 `any_ledger` 夹具，
+它**同时**跑两个来源：
+
+  * `ledger_sample` —— 仓库内的脱敏样本（`tests/fixtures/ledger_sample.json`），
+    16 条、形状复刻真实台账，CI 上靠它跑；
+  * `real_ledger`  —— 本地真实 `results.json`，CI 上不存在 ⇒ 显式跳过。
+
+🔴 2026-09-19 CI 第二次变红就是这里：四个用例直接读真实台账，而它含凭据、
+   被 `.gitignore` 排除 ⇒ CI 上拿到 `[]`。**空基线是最坏的一种降级** ——
+   它不是"失败"，而是让每个用例以各自的形态给出无意义的结论：
+
+     T1  len([]) == 0 + 1   → **碰巧通过（假绿）**
+     T2  next(...) 找不到 success → StopIteration
+     T7  save(p, [] [:10]) 不缩水 → DID NOT RAISE ValueError
+     T8  同 T1 → **碰巧通过（假绿）**
+
+   所以 T2 / T7 现在各带一条**显式前置断言**：基线不满足就当场点名说清楚，
+   而不是让 `next()` 抛裸 `StopIteration`。
+
 跑法：
     pytest tests/test_ledger_merge.py -v
 """
 
 import json
-import pathlib
 
 import pytest
 
 from src import ledger
-
-ROOT = pathlib.Path(__file__).resolve().parents[1]
-RESULTS = ROOT / "results.json"
-
-
-@pytest.fixture(scope="module")
-def real():
-    """真实台账。
-
-    ⚠ 基线必须取**实际条数**，不能硬编码：台账是活的（每跑一次批量注册就变多），
-      写死 53 的话下次正常注册就会被判"测试失败" —— 那是测试在撒谎，不是代码坏了。
-    """
-    return ledger.load_existing(RESULTS)
 
 
 @pytest.fixture
@@ -50,23 +59,27 @@ def new_ds():
 
 
 # ── T1 ────────────────────────────────────────────────────────────────
-def test_t1_new_failure_does_not_drop_history(real):
-    base = len(real)
+def test_t1_new_failure_does_not_drop_history(any_ledger):
+    base = len(any_ledger)
     new = [{"email": "oops-new@x.com", "status": "failed", "stages": {}}]
-    m, kept, _added, up = ledger.merge_records(real, new)
+    m, kept, _added, up = ledger.merge_records(any_ledger, new)
     assert kept == base, f"kept={kept}"
     assert len(m) == base + 1, f"len={len(m)}"
     assert up == 0, f"upgraded={up}"
 
 
 # ── T2 ────────────────────────────────────────────────────────────────
-def test_t2_existing_success_not_downgraded_by_failure(real):
-    tgt = next(r for r in real if r.get("status") == "success")
+def test_t2_existing_success_not_downgraded_by_failure(any_ledger):
+    # 前置条件显式化：基线里没有 success 记录时，`next()` 会抛裸 StopIteration，
+    # 报错信息里看不出"其实是基线不合格"。这里当场说清楚。
+    assert any(r.get("status") == "success" for r in any_ledger), \
+        "基线台账里一条 success 记录都没有，T2 无从验证（基线不合格，不是代码坏了）"
+    tgt = next(r for r in any_ledger if r.get("status") == "success")
     m2, _k, _a, _u = ledger.merge_records(
-        real, [{"email": tgt["email"], "status": "failed", "stages": {}}])
+        any_ledger, [{"email": tgt["email"], "status": "failed", "stages": {}}])
     after = next(r for r in m2 if r["email"] == tgt["email"])
     assert after.get("status") == "success", after.get("status")
-    assert len(m2) == len(real), f"len={len(m2)}"
+    assert len(m2) == len(any_ledger), f"len={len(m2)}"
 
 
 # ── T3 ────────────────────────────────────────────────────────────────
@@ -107,19 +120,25 @@ def test_t6_load_existing_survives_corrupt_missing_and_nonlist(tmp_path):
 
 
 # ── T7 ────────────────────────────────────────────────────────────────
-def test_t7_save_guard_against_silent_shrinkage(real, tmp_path):
+def test_t7_save_guard_against_silent_shrinkage(any_ledger, tmp_path):
+    # 前置条件：`any_ledger[:10]` 必须**真的比基线少**，否则"缩水"根本没发生，
+    # 断言 `pytest.raises(ValueError)` 会以 DID NOT RAISE 的形态炸掉，
+    # 而真实原因（基线太短）在报错里看不出来。2026-09-19 CI 上就是这么红的。
+    assert len(any_ledger) > 10, \
+        f"基线只有 {len(any_ledger)} 条，[:10] 截不出缩水，T7 无从验证"
+
     p = tmp_path / "results.json"
-    p.write_text(json.dumps(real, ensure_ascii=False), encoding="utf-8")
+    p.write_text(json.dumps(any_ledger, ensure_ascii=False), encoding="utf-8")
 
     # 条数变少 -> 必须抛，且**文件不能被改动**（抛之前就写盘等于没护栏）
     with pytest.raises(ValueError):
-        ledger.save(p, real[:10])
-    assert len(ledger.load_existing(p)) == len(real), \
+        ledger.save(p, any_ledger[:10])
+    assert len(ledger.load_existing(p)) == len(any_ledger), \
         f"len={len(ledger.load_existing(p))}"
 
     # 条数变多 -> 放行
-    ledger.save(p, real + [{"email": "n@x.com", "status": "failed"}])
-    assert len(ledger.load_existing(p)) == len(real) + 1
+    ledger.save(p, any_ledger + [{"email": "n@x.com", "status": "failed"}])
+    assert len(ledger.load_existing(p)) == len(any_ledger) + 1
 
     # --overwrite 路径（existing=[]）-> 放行
     ledger.save(p, [{"email": "only@x.com", "status": "failed"}], existing=[])
@@ -127,11 +146,11 @@ def test_t7_save_guard_against_silent_shrinkage(real, tmp_path):
 
 
 # ── T8 ────────────────────────────────────────────────────────────────
-def test_t8_end_to_end_real_ledger_plus_one_failure(real, tmp_path):
-    base = len(real)
+def test_t8_end_to_end_ledger_plus_one_failure(any_ledger, tmp_path):
+    base = len(any_ledger)
     new = [{"email": "oops-new@x.com", "status": "failed", "stages": {}}]
     out = tmp_path / "results.json"
-    out.write_text(json.dumps(real, ensure_ascii=False), encoding="utf-8")
+    out.write_text(json.dumps(any_ledger, ensure_ascii=False), encoding="utf-8")
 
     existing = ledger.load_existing(out)
     merged, _k, _a, _u = ledger.merge_records(existing, new)

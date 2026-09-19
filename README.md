@@ -212,13 +212,17 @@ src/
   redact.py            脱敏助手（日志 / 输出边界必须过这里，见 docs/security-conventions.md）
 
 tests/                 pytest 行为测试 —— 断言从已移除的 `tools/selftests/*.py` **保真迁移**而来
-  conftest.py          autouse 夹具：把运行态文件（配额台账 / 池子状态）重定向到 tmp
+  conftest.py          autouse 夹具：运行态文件（配额台账 / 池子状态）重定向到 tmp；
+                       台账夹具 `ledger_sample` / `real_ledger` / `any_ledger`
+  fixtures/            测试数据（唯一入库的 `.json`：脱敏样本台账）
   test_proxypool.py    槽位池（均衡 / 冷却退避 / 同出口互斥 / 端口预检 / exclude / accept / 状态落盘）
   test_quota.py        配额计数（窗口 / 触顶等待 / 并发追加 / 补录 / scope 隔离）
   test_quota_governor.py 配额决策的**差分等价**（内嵌改造前的内联逻辑当参考实现）
   test_error_kind.py   错误结构化字段（打标点 / 读点 / 新旧判据的分歧清单）
   test_ledger_merge.py 台账合并（运行期）与防缩水护栏
   test_ledger_fragments.py 碎片合并（重建台账）—— 字段只增不减 / 降级补缺口 / 键序
+  test_ledger_sample.py 脱敏样本自身的守卫（形状覆盖 / email 唯一 / 无真凭据形态）
+  test_dependency_surface.py 元测试：测试链的第三方依赖必须 ⊆ ci.yml 装的那三个
   test_browser_login.py `src/browser/` 的**契约**（字段/键名冻结 + 重试循环 + 启动参数注入）
                         —— 零浏览器；**刻意从真源子模块导入**，私有函数不走包，
                            这样"旧路径还能用"的错觉会立刻变成 ImportError 而不是静默失效
@@ -1971,6 +1975,33 @@ python -m pytest tests/test_ledger_merge.py tests/test_ledger_fragments.py
 损坏文件不崩 / 护栏（变少→抛且文件未改动）/ 并集合并 / rank 优先于字段数 /
 碎片合并（导出行补缺口、键取并集、与 `merge_records` 的对照）。
 
+### 🔴 台账类用例的输入从哪来 —— `any_ledger`（样本 + 真实）
+
+这些用例需要"一本真实形状的台账"当基线，而基线**不能硬编码条数**
+（台账是活的：每跑一次批量注册就变多，写死条数的话下次正常注册就会被判
+"测试失败" —— 那是测试在撒谎，不是代码坏了）。
+
+但真实台账 `results.json` 含凭据、**不在仓库里** ⇒ CI 上读到的是 `[]`。
+**空输入是最坏的一种降级**：它不报错，而是让每个用例以各自的形态给出
+无意义的结论 —— 2026-09-19 CI 第二次变红时，同一个根因炸出了四种形态：
+
+| 用例 | 空基线下的表现 |
+|---|---|
+| `test_t1` / `test_t8` | `len([]) == 0 + 1` 成立 → **碰巧通过（假绿）** |
+| `test_t2` | `next()` 找不到 `status=success` → 裸 `StopIteration` |
+| `test_t7` | `save(p, [])` vs `[]` 不算缩水 → `DID NOT RAISE ValueError` |
+| `test_ledger_fragments` 两条 | `assert real` → `AssertionError` |
+
+所以现在由 `any_ledger` 夹具统一裁决，**两个来源都跑**：
+
+- `ledger_sample` —— `tests/fixtures/ledger_sample.json`，形状复刻真实台账、
+  值全编造，**任何环境都可用**（CI 靠它跑）；
+- `real_ledger` —— 本地真实台账，读不到就**大声跳过**（`-rs` 会把原因打进日志），
+  绝不返回 `[]`。
+
+⚠ 刻意不做成"有真数据就用真数据、没有就用样本"：那样本地测的输入和 CI 测的
+输入**不是同一个**，本地绿就证明不了 CI 绿 —— 而那正是这批失败的根本形态。
+
 ## 能不能走纯协议？——不能，成本极高
 
 完整拆过验证码链路（HAR entry #1 ~ #12），结论是**协议复刻理论上可行，但工程上不划算**。
@@ -2098,8 +2129,17 @@ python run.py --headless        # 无头跑，不弹窗口
 - 工具**不绕过任何付费环节**，也不篡改额度 —— 领的就是平台公开提供的免费额度
 - 使用产生的任何后果由使用者自行承担
 
-仓库内**不含任何账号数据**。`results.json`（含明文账号/密码/JWT/API Key）、
+仓库内**不含任何真实账号数据**。`results.json`（含明文账号/密码/JWT/API Key）、
 `.env`（含 Admin Token）、`.workbuddy-ai/`（本地开发记录）均已在 `.gitignore` 中排除。
+
+唯一的例外是 `tests/fixtures/ledger_sample.json` —— 一份**脱敏样本台账**，
+16 条记录、字段形状逐档复刻真实 `results.json`（14 / 33 / 34 键的成功记录、
+空 email 的配额拦截记录、9 键的 `export_keys` 导出行、`0` / `False` / `None` /
+`""` / `{}` / `[]` / 非 ASCII 值），但**值全是编造的**，email 只用 RFC 2606
+保留域 `example.com`。它存在的原因是：真实台账含凭据、不入库 ⇒ CI 上读不到 ⇒
+依赖"一本真实形状的台账"的回归用例在 CI 上全部失效（2026-09-19 CI 第二次变红）。
+样本本身由 `tests/test_ledger_sample.py` 逐条钉住，包括
+「不许出现真凭据形态的串」「email 必须落在保留域」「形状覆盖不许缩水」。
 
 ## 许可
 
