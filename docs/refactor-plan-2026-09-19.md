@@ -1477,3 +1477,73 @@ rm -rf src/browser/
 
 改动**未提交**，`git checkout --` 可退。
 
+### 10.20 提交前发现的三个回归（2026-09-19 深夜）
+
+**这一节是给未来的人看的** —— 三个问题都是**同一形态**：改动本身正确，
+但**依赖它的那一侧没跟上**；而且失败表现**指向症状、不指向原因**。
+
+它们全部**不在任何测试的覆盖范围内** —— 测试全绿、lint 全绿、
+100 批次全链路 100/100 的情况下，它们依然是坏的。
+
+#### 🔴 回归 1：两个泄漏闸门钩子**全部失效**
+
+| | |
+|---|---|
+| 症状 | `.git/hooks/pre-commit` / `pre-push` 指向 `tools/check_leaks.py`，该文件已移到 `tools/gates/` |
+| 表现 | 钩子每次 `exit 1`，打印 **"✗ 提交被泄漏闸门拦下（见上方命中项）"** —— 而上方**没有命中项** |
+| 后果 | **闸门看起来在工作，实际早已失效**；报错还会把人推向 `--no-verify`（而钩子注释里恰好写着"那正是上一次泄漏发生的方式"） |
+| 根因 | `install_hooks.py` 里的**模板已改对**，但**钩子没重装** —— 钩子装在 `.git/hooks/`，**不随仓库分发** |
+| 修法 | 重跑 `python tools/gates/install_hooks.py` + `selftest_check_leaks.py` 做**变异验证** |
+
+⚠ 换机器 / 重 clone 后必须重跑一次安装脚本。这一条**不在 git 里**。
+
+#### 🔴 回归 2：10 处失效的 `tools/` 旧路径引用
+
+代码 import 面改过了，但**文档 / 注释里的命令行**是另一回事：
+
+| 文件 | 处数 |
+|---|---|
+| `.env.example` | 5 |
+| `.gitignore` | 3 |
+| `.env` | 2 |
+
+它们不参与执行，所以**任何测试都不会红** —— 只会让人照着跑一个不存在的命令。
+
+#### 🔴 回归 3：`proxypool_ctl.py` 读不到 `IR_MIHOMO_EXE`
+
+| | |
+|---|---|
+| 症状 | `proxypool_ctl.py start` 报 **`✗ 找不到内核：.`** |
+| 根因 | `Path(os.getenv("IR_MIHOMO_EXE", "").strip())` 在**导入时**求值；该脚本只 `from _path import ROOT`，**从不加载 `.env`** ⇒ `Path("")` 就是 **`Path(".")`** |
+| 迷惑点 | 报错指向"路径写错了"，而**路径根本没被读到** |
+| 同类 | `tools/ops/cf_service_doctor.py` 报"缺少 IR_WORKER_BASE"（看起来像**没配**，实际是**没读**） |
+| 修法 | 在 `tools/_bootstrap.py` 里加载 `.env`（**根治**，不逐个补）—— 所有 `tools/` 脚本都经 `_path` → `_bootstrap`，结构上不可能漏 |
+
+**为什么不逐个补 `import src.config`**：`tools/` 下有 20+ 个脚本读 `IR_*`，
+"记得 import"是必然会被漏的方案 —— 本轮实测已漏两个。
+改在公共垫片里加载一次，并复用 `src/config.py` 的 `_load_dotenv`（不重写解析）。
+
+#### 教训：引用面有**七类**，后两类任何测试都不会红
+
+| # | 类别 | 漏了会怎样 |
+|---|---|---|
+| 1 | 生产代码 import | `ImportError`，响亮 |
+| 2 | CLI / 工具脚本 | `ImportError`，响亮 |
+| 3 | 探针 / 诊断脚本 | `ImportError`，响亮（但不在主链路上，**容易被忘**） |
+| 4 | 测试 | `ImportError`，响亮 |
+| 5 | **构建配置** `packages = [...]` | **静默**：wheel 缺整个子包，本地测试全绿 |
+| 6 | **文档 / 注释里的命令行** | **静默**：不报错，只误导 |
+| 7 | **已安装的钩子** `.git/hooks/` | **静默**：钩子 exit 1，文案却是业务判据 |
+
+⇒ **前五类靠测试兜底，后两类只能靠清单。**
+这就是为什么 `pyproject.toml` 的 `packages`、`.env.example` 的命令、
+`.git/hooks/` 的钩子，都得**手工过一遍**。
+
+扫描器（都在 `.workbuddy-ai/tmp/`，已 gitignore）：
+
+| 脚本 | 作用 |
+|---|---|
+| `scan_old_tool_paths.py` | 从 `git status` 提"旧路径" → 全仓扫失效引用 |
+| `scan_env_load_gap.py` | AST 扫"读了 `IR_*` 却没加载 `.env`"的脚本 |
+
+
