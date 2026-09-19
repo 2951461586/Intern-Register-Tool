@@ -57,13 +57,13 @@ python tools/proxypool_ctl.py stop   # 用完停掉
 | 变量 | 默认 | 说明 |
 |------|------|------|
 | `IR_WORKER_ADMIN_TOKEN` | **无 —— 必填** | CF Worker 的 Admin Token。缺失时启动阶段即报错退出 |
+| `IR_WORKER_BASE` | **无 —— 必填** | 临时邮箱 Worker 地址，形如 `https://<worker>.<subdomain>.workers.dev` |
+| `IR_WORKER_DOMAIN` | **无 —— 必填** | 建邮箱使用的域名（须在该 Worker 的域名列表里） |
 
 **可选（都有实测默认值，通常不用动）**
 
 | 变量 | 默认 | 说明 |
 |------|------|------|
-| `IR_WORKER_BASE` | 远端 Worker 地址 | 临时邮箱服务地址 |
-| `IR_WORKER_DOMAIN` | `<your-mail-domain>` | 建邮箱使用的域名 |
 | `IR_CHROME_PATH` | 本机 Chrome | 浏览器可执行文件 |
 | `IR_CHAT_API_BASE` | `https://discovery-api.intern-ai.org.cn/v1` | 推理网关 |
 | `IR_MICRO_BUDGET` | `45` | 鼠标喂数据预算（秒）。**只能往大调**，往小调会稳定拿到更差的 Path B，见下 |
@@ -338,12 +338,12 @@ probe_quota    尝试 1  成功 0   B0000 1   ← 单账号也失败，限流未
 
 #### 🔴 修正二：封禁是 **IP 维度**，不是邮箱域名维度
 
-一个自然的猜测是"`<your-mail-domain>` 这个域名被平台拉黑了"。Worker 支持 **7 个域名**，
+一个自然的猜测是"某个发信域名被平台拉黑了"。Worker 支持 **多个域名**，
 于是可以做**控制变量实验**（同机器、同 IP、同一套请求头，**只改邮箱域名**）：
 
 ```
-<your-mail-domain>    → HTTP 200  {"traceId":..., "msgCode":"B0000", ...}
-<alt-domain>    → HTTP 200  {"traceId":..., "msgCode":"B0000", ...}   ← 换域名无效
+<域名 A>    → HTTP 200  {"traceId":..., "msgCode":"B0000", ...}
+<域名 B>    → HTTP 200  {"traceId":..., "msgCode":"B0000", ...}   ← 换域名无效
 ```
 
 → **换发信域名没用**，只能等窗口或换出口 IP。`tools/probe_quota_scope.py` 可复现。
@@ -1369,8 +1369,7 @@ GET  /health               {"ok":..., "database":..., "domains":..., "storage":.
 ```
 
 鉴权头 `X-Admin-Token` 与 `Authorization: Bearer` 都支持，两个都带最稳。
-可用域名：`<your-mail-domain>` / `edu.<your-mail-domain>` / `<your-mail-domain>` / `<your-mail-domain>` /
-`<alt-domain>` / `<alt-domain>` / `<alt-domain>`。
+可用域名由 Worker 侧配置决定，`GET /health` 返回的 `domains` 字段会列出来。
 
 `received_at` 是**毫秒** unix 时间戳（形如 `1789449135216`），不是秒。
 
@@ -1433,7 +1432,7 @@ GET /admin/all?limit=5 -> 500
   而 `raw_text` / `raw_html` 单列上限 1.5MB（`MAX_RAW_LENGTH = 1_500_000`）
 - → 全表扫描 + 排序 + 搬运大字段，超出 D1/Worker 资源上限，偶发挤过去
 
-本地源码（`<path-to-worker-source>`）是**更新的一版**，
+另一处本地源码是**更新的一版**，
 `handleAdminAll` 已经支持 `?email=` 过滤、`allMessages` 也改成了带 WHERE 的分支 ——
 但**部署的还是旧版**（旧版忽略 `email`）。
 
@@ -1535,7 +1534,7 @@ Worker 现在 100% 打不通，激活拿不到邮件。两条路都**在另一�
 
 本机**没有 wrangler、也没有 Cloudflare 凭据**（`~/.wrangler` 不存在，
 无 `CLOUDFLARE_API_TOKEN`），所以这一步没法自动做。
-D1 database_id 是 `<your-d1-database-id>`。
+D1 database_id 在 `wrangler.toml` 的 `database_id` 字段里（也可用 `wrangler d1 list` 查）。
 
 **救已注册但没激活的账号**：`tools/recover_activation.py`
 

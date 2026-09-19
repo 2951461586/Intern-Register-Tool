@@ -14,9 +14,9 @@
 Worker 支持多个域名，于是可以做**控制变量实验**：
 
     同一台机器、同一个 IP、同一套请求头，
-    只把邮箱域名从 `<your-mail-domain>` 换成另一个 → 看是否还 B0000
+    只把邮箱域名从 `IR_WORKER_DOMAIN` 换成另一个 → 看是否还 B0000
 
-  - 换域名成功 → **域名维度**（<your-mail-domain> 这个域名被烧了）
+  - 换域名成功 → **域名维度**（这个发信域名被烧了）
   - 换域名仍失败 → **IP 维度**（或更上层）
 
 顺序上先试**一个**其它域名：若成功就收工（信息已足够，且不再消耗尝试次数）；
@@ -47,6 +47,7 @@ Worker 支持多个域名，于是可以做**控制变量实验**：
 """
 
 import argparse
+import os
 import sys
 import time
 from pathlib import Path
@@ -59,9 +60,10 @@ from src import config  # noqa: E402
 from src.crypto_rsa import encrypt_password  # noqa: E402
 from src.tempmail import TempMailClient  # noqa: E402
 
-BASELINE_DOMAIN = config.WORKER_DOMAIN        # <your-mail-domain>
-# 第二个候选刻意选**不同后缀**（eu.cc），排除"同一后缀被连带"的解释
-FALLBACK_DOMAIN = "<alt-domain>"
+BASELINE_DOMAIN = config.WORKER_DOMAIN        # 取自 IR_WORKER_DOMAIN
+# 第二个候选刻意选**不同后缀**的域名，排除"同一后缀被连带"的解释。
+# ⚠ 这里不再写死具体域名，请改成你自己 Worker 支持的另一个域名。
+FALLBACK_DOMAIN = os.getenv("IR_PROBE_FALLBACK_DOMAIN", "")
 
 INTERESTING_HEADERS = ("retry-after", "x-ratelimit", "x-rate", "cf-",
                        "set-cookie", "server", "date")

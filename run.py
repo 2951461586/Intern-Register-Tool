@@ -57,7 +57,7 @@ def main():
     ap.add_argument("--workers", type=int, default=4,
                     help="浏览器并发数（实测 6 路零失败，默认 4）")
     ap.add_argument("--key-name", default="default", help="API Key 名称")
-    ap.add_argument("--mail-domain", default=None, help="临时邮箱域名（默认 <your-mail-domain>）")
+    ap.add_argument("--mail-domain", default=None, help="临时邮箱域名（默认取 IR_WORKER_DOMAIN）")
     ap.add_argument("--headless", action="store_true",
                     help="无头模式（实测可用，比 headful 快；不弹窗口）")
     ap.add_argument("--out", default="results.json", help="结果输出文件")

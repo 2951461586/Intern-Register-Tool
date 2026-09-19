@@ -66,10 +66,10 @@ import urllib.request
 API = "https://api.cloudflare.com/client/v4"
 
 # ── 默认值：允许用环境变量覆盖，方便换账号/换库 ────────────────────────────
-DEFAULT_ACCOUNT = os.getenv("CF_ACCOUNT_ID", "<your-cf-account-id>")
-DEFAULT_WORKER = os.getenv("CF_WORKER_NAME", "temp-email-worker")
-DEFAULT_DB = os.getenv("CF_D1_DATABASE_ID", "<your-d1-database-id>")
-DEFAULT_BASE = os.getenv("IR_WORKER_BASE", "https://<worker>.<your-subdomain>.workers.dev")
+DEFAULT_ACCOUNT = os.getenv("CF_ACCOUNT_ID", "")
+DEFAULT_WORKER = os.getenv("CF_WORKER_NAME", "")
+DEFAULT_DB = os.getenv("CF_D1_DATABASE_ID", "")
+DEFAULT_BASE = os.getenv("IR_WORKER_BASE", "")
 
 # D1 Workers Free 计划的每日额度。超了就报 7500。
 D1_FREE_ROWS_READ = 5_000_000
@@ -428,6 +428,13 @@ def main() -> int:
     ap.add_argument("--json", dest="json_out", default="", help="把结果写到这个文件")
     args = ap.parse_args()
 
+    # 🔴 账号 / Worker 名 / 库 ID / Worker 地址都不再写死在仓库里
+    #    （本仓库是公开的），必须由环境变量或命令行提供。
+    if not args.base:
+        print(f"{BAD} 缺少 IR_WORKER_BASE / --base（Worker 对外地址）。")
+        print("     这个值不写死在仓库里，请用环境变量或命令行参数提供。")
+        return 2
+
     token = os.getenv("CF_API_TOKEN", "").strip()
     admin = os.getenv("IR_WORKER_ADMIN_TOKEN", "").strip()
     full = bool(token)
@@ -447,6 +454,11 @@ def main() -> int:
     # 🔴 没有 CF_API_TOKEN 时**降级而不是退出**：端点直连那一半不需要 CF 凭据，
     #    而它恰好包含最有价值的那条判据（`/admin/all?limit=1` 必须读 ≥1 行）。
     #    这样无人值守的定时任务就不必把凭据持久化到任何文件里。
+    if full and not (args.account and args.worker and args.db):
+        print(f"{BAD} full 模式还需要 CF_ACCOUNT_ID / CF_WORKER_NAME / CF_D1_DATABASE_ID")
+        print("     它们不写死在仓库里，请用环境变量或命令行参数提供。")
+        return 2
+
     if full:
         t = check_token(token, args.account)
         report["token"] = t

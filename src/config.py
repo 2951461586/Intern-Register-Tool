@@ -36,10 +36,10 @@ def _load_dotenv(path: Path) -> None:
 _load_dotenv(Path(__file__).resolve().parents[1] / ".env")
 
 # ── CF Worker 临时邮箱 ────────────────────────────────────────────
-WORKER_BASE = os.getenv("IR_WORKER_BASE", "https://<worker>.<your-subdomain>.workers.dev")
+WORKER_BASE = os.getenv("IR_WORKER_BASE", "")
 # ⚠ 默认留空。缺它时由 `validate()` 在入口处报错，而不是静默发一堆 401。
 WORKER_ADMIN_TOKEN = os.getenv("IR_WORKER_ADMIN_TOKEN", "")
-WORKER_DOMAIN = os.getenv("IR_WORKER_DOMAIN", "<your-mail-domain>")
+WORKER_DOMAIN = os.getenv("IR_WORKER_DOMAIN", "")
 
 # ── OpenXLab SSO ─────────────────────────────────────────────────
 SSO_BASE = "https://sso.openxlab.org.cn"
@@ -287,5 +287,11 @@ def validate(*, need_worker_token: bool = True) -> list[str]:
     missing = []
     if need_worker_token and not WORKER_ADMIN_TOKEN:
         missing.append("IR_WORKER_ADMIN_TOKEN")
+    # 这两项不再有写死的默认值（本仓库是公开的），缺失时在入口报错，
+    # 而不是带着空 base 去发一堆注定失败的请求。
+    if not WORKER_BASE:
+        missing.append("IR_WORKER_BASE")
+    if not WORKER_DOMAIN:
+        missing.append("IR_WORKER_DOMAIN")
     return missing
 
