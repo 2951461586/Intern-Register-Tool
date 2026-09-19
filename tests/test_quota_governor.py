@@ -14,6 +14,11 @@
 不是新判据 —— 这正是要对比的东西。所以 `_ref_*` 看起来"过时"是对的，
 **不要**去"修"它。
 
+⚠ 本文件**不全是**差分用例：`2b` 那组（`test_ignore_quota_*`）断言的是
+**新契约**（`--ignore-quota` 必须覆盖全部检查点）。理由写在那一组的注释里 ——
+简言之，`_ref_check_slot` / `_ref_claim_slot` 本身就没读开关，拿它们当参照物
+只会把洞固化成"预期行为"。
+
 跑法：
     pytest tests/test_quota_governor.py -v
 """
@@ -66,7 +71,12 @@ def _ref_allow(count, *, pool, ignore_quota, logs):
 
 
 def _ref_check_slot(index, *, pool):
-    """旧 `_slot_has_quota` 闭包（原 `producer` 内）。"""
+    """旧 `_slot_has_quota` 闭包（原 `producer` 内）。
+
+    ⚠ **刻意没有 `ignore` 参数** —— 旧逻辑就没读 `--ignore-quota`，这是历史
+    遗留的洞（对比 `_ref_allow` 是有的）。不要"补"上去：它是参照物，
+    补了就再也照不出这个差异。新契约由 2b 那组用例单独断言。
+    """
     try:
         return not quota.status(
             scope=config.slot_scope(pool.url_of(index))).exhausted
@@ -75,7 +85,10 @@ def _ref_check_slot(index, *, pool):
 
 
 def _ref_claim_slot(scope, logs):
-    """旧「拿到租约后复查」块（原 `producer` 内）。"""
+    """旧「拿到租约后复查」块（原 `producer` 内）。
+
+    ⚠ 同上：**刻意没有 `ignore`**。
+    """
     st = quota.status(scope=scope)
     if st.exhausted:
         logs.append(f"跳过（出口 {scope} 配额保护：{st.describe()}）")
@@ -263,6 +276,112 @@ def test_claim_slot_matches_reference(slot_env, tmp_path, monkeypatch):
         new = gov.claim_slot(scope, new_logs.append)
         assert new == old, f"scope={scope} 跳过原因不一致"
         assert new_logs == old_logs, f"scope={scope} 日志不一致"
+
+
+# ══════════════════════════════════════════════════════════════════
+# 2b. `--ignore-quota` 的覆盖面（2026-09-20 补）
+# ══════════════════════════════════════════════════════════════════
+# 🔴 为什么不并进上面的差分用例：差分是拿**改造前的内联逻辑**当参照物，
+#    而 `_ref_check_slot` / `_ref_claim_slot` 里**本来就没有** ignore 分支
+#    —— 那个漏是历史遗留（`_ref_allow` 有 ignore 参数，这两个没有），
+#    不是 #13 重构引入的回归。所以下面断言的是**新契约**，不是"与旧逻辑一致"；
+#    拿旧逻辑当参照物只会把这个洞固化成"预期行为"。
+#    非 ignore 档的等价性仍由上面两个差分用例保证（它们传的是默认 ignore=False）。
+#
+# 背景（2026-09-20 实测）：槽位模式下 `--ignore-quota` 完全失效 —— 50 个任务
+# 0 个成功，全部 `skipped`，报错是"所有出口配额均已满（4 个槽位里没有一个合格
+# （被 accept 全部否掉））"。看着像池子满了，实际是 `check_slot` 没读开关。
+
+IGNORE_SCOPE = "203.0.113.11"
+
+
+def _exhaust(scope: str) -> None:
+    """把某个出口的 scope 记到本地上限（`slot_env` 把上限压到了 2）。"""
+    for _ in range(config.REG_QUOTA_MAX):
+        quota.record("x@example.com", scope=scope)
+
+
+def test_ignore_quota_makes_check_slot_accept_exhausted_slot(slot_env, tmp_path,
+                                                             monkeypatch):
+    """开关打开时，记满的出口也必须被 `accept` 放行。
+
+    🔴 这就是那次 0/50 的直接复现：`check_slot` 是 `accept` 谓词，一路
+    `False` → `acquire()` 抛 `NoEligibleSlot` → 整批 skipped。
+    """
+    monkeypatch.setattr(quota, "state_path", lambda: tmp_path / "q.jsonl")
+    pool = FakePool(SLOTS)
+    _exhaust(IGNORE_SCOPE)
+
+    assert _ref_check_slot(1, pool=pool) is False, \
+        "参照物没有 ignore 分支 —— 这正是历史遗留的洞（别去修它）"
+    assert QuotaGovernor(pool=pool).check_slot(1) is False, "关着时必须照拦"
+    assert QuotaGovernor(pool=pool, ignore=True).check_slot(1) is True, \
+        "--ignore-quota 开着还被拦 = 开关失效"
+    assert QuotaGovernor(pool=pool, ignore=True).check_slot(2) is True
+
+
+def test_ignore_quota_does_not_bypass_unknown_egress(slot_env, tmp_path,
+                                                     monkeypatch):
+    """🔴 边界：`--ignore-quota` **不**放开"端口没登记出口 IP"那一支。
+
+    两者拦的根本不是一回事：一个拦"额度用完了"（保守估计，可以不信），
+    一个拦"不知道该把额度记到谁头上"（放行 = 某个真实出口**静默**超限，
+    事后查不出来）。所以开关只覆盖前者。
+    """
+    monkeypatch.setattr(quota, "state_path", lambda: tmp_path / "q.jsonl")
+    pool = FakePool(["http://127.0.0.1:19999"])          # 没登记出口 IP
+
+    assert QuotaGovernor(pool=pool).check_slot(1) is False
+    assert QuotaGovernor(pool=pool, ignore=True).check_slot(1) is False, \
+        "账目错乱不能靠开关绕过"
+
+
+def test_ignore_quota_makes_claim_slot_pass_and_stay_silent(slot_env, tmp_path,
+                                                            monkeypatch):
+    """`claim_slot` 在开关打开时必须返回 `""`（放行）且**不打印**跳过日志。
+
+    ⚠ 只补 `check_slot` 不够：那一处管"能不能拿到租约"，这一处管"拿到之后
+    放不放行"。漏掉这里会变成"租约照拿、请求不发"，白占一个出口。
+    """
+    monkeypatch.setattr(quota, "state_path", lambda: tmp_path / "q.jsonl")
+    _exhaust(IGNORE_SCOPE)
+
+    on_logs: list[str] = []
+    gov_on = QuotaGovernor(pool=object(), ignore=True)
+    assert gov_on.claim_slot(IGNORE_SCOPE, on_logs.append) == ""
+    assert on_logs == [], f"开关打开时不该打印跳过日志：{on_logs}"
+
+    # 关掉开关仍然拦 —— 保证 `ignore` 是唯一变量，不是判据被改坏了。
+    off_logs: list[str] = []
+    gov_off = QuotaGovernor(pool=object())
+    assert gov_off.claim_slot(IGNORE_SCOPE, off_logs.append) != ""
+    assert len(off_logs) == 1, f"关着时应当且只当打印一条：{off_logs}"
+
+
+@pytest.mark.parametrize("mode", ["non_pool", "slot"])
+def test_ignore_quota_covers_all_checkpoints(slot_env, tmp_path, monkeypatch,
+                                             mode):
+    """🔴 回归护栏：开关必须覆盖**全部**检查点，一处漏掉这条就红。
+
+    形态是刻意选的 —— 不逐点罗列，而是问一个端到端的问题：
+    「配额全部用光 + 开关打开时，还有任何一处会拦我吗？」
+    2026-09-20 之前它会失败（`check_slot` 拦），而当时三个检查点各自的用例
+    都不存在，所以洞一直没人发现。新增检查点时应把它加进这里。
+    """
+    monkeypatch.setattr(quota, "state_path", lambda: tmp_path / "q.jsonl")
+    pool = FakePool(SLOTS) if mode == "slot" else None
+    gov = QuotaGovernor(pool=pool, ignore=True, log=lambda _m: None)
+
+    for scope in ("203.0.113.11", "203.0.113.12"):
+        _exhaust(scope)
+
+    # ① 开跑前
+    assert gov.allow(3) == 3, "开跑前被裁"
+    # ② 拿租约前 + ③ 拿到租约后
+    if pool is not None:
+        assert all(gov.check_slot(i) for i in (1, 2)), "拿租约前被否掉"
+        for scope in ("203.0.113.11", "203.0.113.12"):
+            assert gov.claim_slot(scope, lambda _m: None) == "", "拿到租约后被拦"
 
 
 # ══════════════════════════════════════════════════════════════════

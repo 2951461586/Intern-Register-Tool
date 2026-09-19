@@ -194,9 +194,23 @@ class QuotaGovernor:
     改造前是靠 `_note_register_result` 开头一句 `if pool is not None: … return`
     隐式表达的，还得专门写注释解释为什么。
 
-    ⚠ **判据一字未改**。等价性由 `tests/test_quota_governor.py` 的差分测试保证 ——
-    那里内嵌了改造前从 `run_batch` 抄下来的原始内联逻辑，逐输入对比两者结论，
-    而不是靠"读代码觉得一样"。
+    ⚠ **`ignore=False` 时判据一字未改**。等价性由 `tests/test_quota_governor.py`
+    的差分测试保证 —— 那里内嵌了改造前从 `run_batch` 抄下来的原始内联逻辑，
+    逐输入对比两者结论，而不是靠"读代码觉得一样"。
+
+    🔴 `ignore=True`（`--ignore-quota`）必须覆盖**全部三个**检查点，
+    一处漏掉整个开关就是摆设：
+        `allow()`       —— 原逻辑就有
+        `check_slot()`  —— 2026-09-20 补（原逻辑漏，实测 50 批次 0/50 全 skipped）
+        `claim_slot()`  —— 2026-09-20 补（同上）
+    漏在槽位模式下的表现最恶劣：`check_slot` 是 `accept` 谓词，它一路返回
+    `False` 会让 `acquire()` 抛 `NoEligibleSlot`，报出来的话术是
+    "所有出口配额均已满（4 个槽位里没有一个合格）" —— 看着像**池子满了**，
+    实际是**开关没生效**。这条误导性文案本身就是排查成本，所以现在
+    三个检查点齐了，并且各有独立的差分/行为用例钉住（`IGNORE_*` 用例）。
+    ⚠ 唯一**不**受 `ignore` 影响的是 `check_slot()` 里"端口没登记出口 IP"
+    那一支 —— 它拦的不是"额度用完了"，而是"不知道该把额度记到谁头上"，
+    理由写在那个分支上。
 
     ⚠ 这个类**有状态**（运行中哨兵要跨线程累计），但状态只有一个计数 + 一个
     `Event`。不要往这里加别的东西 —— 它只该回答"现在能不能发请求"。
@@ -251,11 +265,24 @@ class QuotaGovernor:
         if self.pool is None:
             return True
         try:
-            return not quota.status(
-                scope=config.slot_scope(self.pool.url_of(index))).exhausted
+            # ⚠ `pool.url_of()` 必须留在 try 里（见 test_check_slot_rejects_unmapped_port）。
+            scope = config.slot_scope(self.pool.url_of(index))
         except ValueError:
             # 端口没登记出口 IP：不敢用，否则配额会被静默记错地方。
+            # 🔴 这一支**刻意不受 `--ignore-quota` 影响**。它拦的不是"额度用完了"
+            #    而是"不知道该把额度记到谁头上" —— 放行等于让某个真实出口
+            #    悄悄超过服务端上限（然后**真**被封），而 `--ignore-quota` 的
+            #    语义只是"别信本地那个保守计数"，不是"允许账目错乱"。
+            #    两种失败的可见度也完全不同：超限被封有 `B0000` 明示，
+            #    记错 scope 是**静默**的，事后查不出来。
             return False
+        if self.ignore:
+            # `--ignore-quota`：本地计数是保守估计，用户已确认服务端恢复了。
+            # 🔴 少了这一句，槽位模式下 `accept` 会被全部否掉 →
+            #    `acquire()` 抛 NoEligibleSlot → 整批 0 个，且报错话术
+            #    看起来像"池子满了"（2026-09-20 实测 50 批次 0/50）。
+            return True
+        return not quota.status(scope=scope).exhausted
 
     def claim_slot(self, scope: str, log=print) -> str:
         """拿到租约后**再查一遍**。返回跳过原因，`""` = 放行。
@@ -266,6 +293,11 @@ class QuotaGovernor:
         `log` 由调用方传入 —— producer 级的日志带 `[i/n]` 前缀，
         收进 `self.log` 会把所有 producer 的输出混成一路。
         """
+        if self.ignore:
+            # 与 `check_slot()` 同一把开关。只补 `check_slot` 是不够的：
+            # 那一处管"能不能拿到租约"，这一处管"拿到之后放不放行"，
+            # 漏掉这里会变成"租约照拿、请求不发"，白占一个出口。
+            return ""
         st = quota.status(scope=scope)
         if not st.exhausted:
             return ""
@@ -748,6 +780,17 @@ def run_batch(*, count: int, workers: int = 2, headless: bool = False,
     #    撞上之后**连单账号都注册不了**，继续投递只是在加深封禁、并制造一堆
     #    假失败记录。宁可少跑几个，也不要撞墙。
     #    分模式的分叉理由见 `QuotaGovernor` 的类 docstring。
+    # 🔴 开关的可见性警告刻意放在**调用点**而不是 `allow()` 里面：`allow()` 的
+    #    输出被差分测试逐字对比（`_ref_allow` 是改造前的原样抄写，ignore 时
+    #    不打印），往那里加一行会当场把测试打红 —— 而测试是对的，不该为了
+    #    一行提示去改"历史判据"。
+    if ignore_quota:
+        print("⚠ --ignore-quota 已开启：本地配额守卫**全部三个检查点**都跳过"
+              "（开跑前裁剪 / 拿租约前预筛 / 拿到租约后复查）。\n"
+              f"  本地计数只是保守估计，跳过它意味着**完全依赖服务端**："
+              f"真触顶会直接吃 {QUOTA_MSG_CODE}。\n"
+              "  那是出口维度的封禁，不会自己恢复 —— 请自行确认窗口已滑出。",
+              flush=True)
     gov = QuotaGovernor(pool=pool, ignore=ignore_quota,
                         log=lambda m: print(m, flush=True))
     count = gov.allow(count)
