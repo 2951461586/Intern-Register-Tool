@@ -1,0 +1,55 @@
+name: ci
+
+# 与 `secret-scan.yml` **刻意分开**，不要合并：
+#   - secret-scan 必须能在"没装 pytest"的环境里跑（它只依赖 stdlib），
+#     而且它需要 `fetch-depth: 0`（要扫全部 git 历史）。
+#   - 本工作流的两个 job 需要 ruff / pytest。
+# 混在一起会给泄漏闸门多加一个"因为 pytest 装不上而失败"的失败模式 ——
+# 而闸门失败的代价是**误以为仓库干净**。
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      # 版本范围与 pyproject.toml 的 dev 依赖保持一致。
+      - name: 安装 ruff
+        run: pip install "ruff>=0.16,<0.17"
+
+      - name: ruff check
+        run: python -m ruff check .
+
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      # 🔴 测试链上**零第三方依赖**：只有 stdlib + pytest。
+      #    `requests` / `cryptography` / `playwright` 都不在 import 路径上
+      #    （可用 `python -c "import tests..."` 复核）。这是刻意的 ——
+      #    项目承诺"clone 下来就能跑"，测试不该要求先装一堆东西。
+      - name: 安装 pytest
+        run: pip install pytest
+
+      - name: pytest
+        run: python -m pytest -q

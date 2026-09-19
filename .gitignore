@@ -10,9 +10,17 @@
 #    （内含真实 IR_WORKER_ADMIN_TOKEN）**完全没被忽略** ——
 #    `git check-ignore` 一验就现形。
 #
-# 🔴 配套：`tools/check_leaks.py` 是同一套规则的**第二层**。
+# 🔴 配套：`tools/gates/check_leaks.py` 是同一套规则的**第二层**。
 #    两层必须同时拦，只改一层会漂移成"一个放行一个拦截"。
-#    提交前跑 `python tools/check_leaks.py`（pre-commit 钩子已自动挂）。
+#    提交前跑 `python tools/gates/check_leaks.py`（pre-commit 钩子已自动挂）。
+#
+# ⚠ 钩子**不随仓库分发**，而且它们内部写的是**脚本路径的绝对定位** ——
+#   所以每次移动闸门脚本的位置（如 2026-09-19 的 tools/ → tools/gates/），
+#   都必须重跑 `python tools/gates/install_hooks.py` 覆盖已装的钩子。
+#   实测踩过：只改了脚本里的模板、没重装钩子 ⇒ 钩子仍指向旧路径 ⇒
+#   `python: can't open file ... tools/check_leaks.py` ⇒ 钩子每次都 exit 1，
+#   而报错文案却是"提交被泄漏闸门拦下（见上方命中项）"——
+#   上方根本没有命中项。**闸门看起来在工作，实际早已失效。**
 # ═════════════════════════════════════════════════════════════════
 
 
@@ -53,7 +61,7 @@ accounts.json
 
 
 # ── 4. 代理清单 —— 内含 `host:port:user:pass` ─────────────────────
-# `tools/probe_proxy.py --file` 与槽位池都吃这两种名字。
+# `tools/probes/probe_proxy.py --file` 与槽位池都吃这两种名字。
 # 默认位置在 .workbuddy-ai/ 下（已被 §7 覆盖），这里兜底防"换个目录就漏"。
 proxies.txt*
 slots.txt*

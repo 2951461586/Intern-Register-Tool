@@ -11,10 +11,10 @@
 
 关键结论：
   - **注册/激活不需要人机验证**（失败时报 A0216 密码解密失败，而非 B0501 人机验证失败）
-  - **登录强制人机验证**，纯 HTTP 无解，必须走 browser_login
+  - **登录强制人机验证**，纯 HTTP 无解，必须走 `src/browser/`（浏览器登录子包）
   - 密码字段 = RSA_PKCS1v15(f"{identity}||{password}{unix_ts}") 的 base64
 
-🔴 429 限流的真实边界（2026-09-15 实测，见 .workbuddy-ai/tmp/probe_429.py）：
+🔴 429 限流的真实边界（2026-09-15 实测，见 tools/probes/probe_429.py）：
   - `personal/username/check`（只读）：**8 路并发也完全不限流**
   - `register/byEmail`（写）：**4 路并发时 3 路被 429 拒绝**，且是立即拒绝（~1.2s）
   所以限流挂在**写操作**上，不是笼统的 IP 突发限速。

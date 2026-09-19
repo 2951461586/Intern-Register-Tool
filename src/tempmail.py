@@ -19,7 +19,6 @@ API（均需 X-Admin-Token）：
 import json
 import os
 import time
-import urllib.parse
 from dataclasses import dataclass
 
 import requests

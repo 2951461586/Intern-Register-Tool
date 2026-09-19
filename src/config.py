@@ -125,7 +125,6 @@ MAIL_POLL_TIMEOUT = 120     # 秒
 #   下面这两个常量现在**只服务于向后兼容**（`list_mails()` 不传 email 时的
 #   退回路径）。收信主路径已经不需要"窗口开多大"这个折中了 ——
 #   索引查询只返回这一个收件人的邮件。
-MAIL_LIST_MIN = 5           # 仅退回路径用（历史值，保留不动）
 MAIL_LIST_LIMIT = 50        # 仅退回路径用（`list_mails()` 不传 email 时的默认 limit）
 REQUEST_TIMEOUT = 30        # 秒
 
@@ -173,7 +172,7 @@ REG_QUOTA_WINDOW_H = float(os.getenv("IR_REG_QUOTA_WINDOW_H", "24"))
 #     IR_PROXY=host:port:user:pass          # 单条
 #     IR_PROXY=http://user:pass@host:port   # 也接受完整 URL
 #
-# ⚠ 三条硬规矩（都是实测踩出来的，见 `tools/probe_proxy.py`）：
+# ⚠ 三条硬规矩（都是实测踩出来的，见 `tools/probes/probe_proxy.py`）：
 #   1. **别用 TCP 连通性判断代理是否可用**。本机跑着 Clash TUN，连接
 #      `203.0.113.30:764` 其实是连到本地虚拟网卡（实测 0.02s —— 中国到
 #      美国不可能是 20ms）。必须真的发一个请求拿到出口 IP 才算数。
@@ -195,7 +194,26 @@ IR_PROXY_SLOTS = os.getenv("IR_PROXY_SLOTS", "").strip()
 IR_PROXY_SLOTS_FILE = os.getenv("IR_PROXY_SLOTS_FILE", "").strip()
 # 一个槽位被判"这个 IP 被目标站点封了"后，冷却多久才重新启用（秒）。
 # 参考 aBaiFreeGPT 的 `MIHOMO_NODE_COOLDOWN_SECONDS=120`。
+# ⚠ 这是**基础**冷却：同一槽位反复被封时按 2 的幂退避（见下一条）。
 IR_PROXY_COOLDOWN = float(os.getenv("IR_PROXY_COOLDOWN", "120") or 120)
+
+# 🔴 反复被封时冷却退避的**封顶**（秒），默认 6 小时。
+#
+# 为什么需要退避（2026-09-19 补）：基础冷却 120s，而服务端配额窗口是
+# **24h**（`REG_QUOTA_WINDOW_H`）—— 差 720 倍。而 `quota.record()`
+# **只在注册成功时调用**，封禁**不写**配额台账，于是 120s 后本地计数没涨、
+# `pipeline` 侧的 `accept` 照样放行 ⇒ 这个已被封的出口被重新租出去，
+# 再打一次注定失败的请求 —— **每 120s 一次，一天约 720 次**，每次都在加深封禁。
+#
+# 退避序列（base=120 / cap=21600）：
+#     120 → 240 → 480 → 960 → 1920 → 3840 → 7680 → 15360 → 21600（封顶）
+# 即"一天 720 次"压到"一天 6 次左右"。
+#
+# ⚠ 封顶取 6h 而不是 24h 的理由：这是**没有证据时的猜测**，不能猜得太激进。
+#    取 24h 等于"封一次就整天不用它"，而单次 B0000 有可能是服务端抖动
+#    （`pipeline.QUOTA_STREAK_STOP` 取 2 就是同一个理由）。
+#    6h 让"真被封"的出口基本退出本轮，同时"偶发抖动"的出口不至于被长期闲置。
+IR_PROXY_COOLDOWN_MAX = float(os.getenv("IR_PROXY_COOLDOWN_MAX", "21600") or 21600)
 # 等一个空闲槽位最多等多久（秒）。全部槽位都在冷却时 `acquire()` 会阻塞，
 # 这个值就是它的上限 —— 超时抛 `TimeoutError`，那个任务按失败记账。
 # 🔴 别设成 0/无穷：0 会让"全冷却"瞬间变成一片假失败；
@@ -249,9 +267,9 @@ def proxy_slots() -> list[str]:
 #        IR_SLOT_EGRESS_IPS=7901=10.0.0.1,7902=10.0.0.2
 #
 # 🔴 换订阅 / 换节点 / 换机房之后这张表就过期了，必须重测：
-#        python tools/probe_slots.py
+#        python tools/probes/probe_slots.py
 #    改完还要**同步迁移台账**（否则旧记录挂在旧 IP 名下）：
-#        python tools/migrate_quota_scope.py --apply
+#        python tools/data/migrate_quota_scope.py --apply
 IR_SLOT_EGRESS_IPS = os.getenv("IR_SLOT_EGRESS_IPS", "").strip()
 
 
@@ -291,11 +309,11 @@ def slot_scope(url: str) -> str:
     if not ip:
         raise ValueError(
             f"槽位 {url} 的出口 IP 未知（端口 {port} 不在 SLOT_EGRESS_IPS 里）。\n"
-            f"  1) 先量出真实出口 IP： python tools/probe_slots.py\n"
+            f"  1) 先量出真实出口 IP： python tools/probes/probe_slots.py\n"
             f"  2) 写进 .env（**不要写进源码**，出口 IP 不进仓库）：\n"
             f"       IR_SLOT_EGRESS_IPS={port}=<那个槽位的出口 IP>\n"
             f"     多个槽位用逗号分隔：7901=1.1.1.1,7902=2.2.2.2\n"
-            f"  3) 迁移台账： python tools/migrate_quota_scope.py --apply\n"
+            f"  3) 迁移台账： python tools/data/migrate_quota_scope.py --apply\n"
             f"  —— 不能退回按槽位号记账：那会静默把配额记到别的 IP 头上。")
     return ip
 
@@ -362,41 +380,6 @@ def apply_proxy(session, proxy: str = None) -> None:
     session.trust_env = False
 
 
-# ── 脱敏助手：日志 / 输出边界必须过这里 ─────────────────────────────
-# 🔴 为什么必须有：代理串是 `scheme://user:pass@host:port` 形式，
-#    直接 print / 写日志会把**账密**一起落盘。而 `.workbuddy-ai/tmp/*.log`
-#    经常被贴进 issue 或对话里 —— 一次就够泄漏。
-#    实测 `tools/probe_proxy.py` 原来会打印 `IR_PROXY=<完整串>`（已修）。
-#
-# 用法：**凡是把配置值写进 stdout / 日志 / 报告的地方，先过这两个函数。**
-def redact_url(url: str) -> str:
-    """把 URL 的 userinfo（`user:pass@`）换成 `***`，其余保留。
-
-        http://user:pass@203.0.113.30:8080  →  http://***@203.0.113.30:8080
-        http://127.0.0.1:7901               →  原样（没有 userinfo）
-    """
-    if not url or "://" not in url:
-        return url or ""
-    scheme, _, rest = url.partition("://")
-    if "@" not in rest:
-        return url
-    _userinfo, _, hostpart = rest.rpartition("@")
-    return f"{scheme}://***@{hostpart}"
-
-
-def redact(raw: str, keep: int = 0) -> str:
-    """把凭据串打成 `<N chars>` —— **连前缀都不打**。
-
-    `keep>0` 只用于本地排查。默认 0，因为"前 6 位"这类信息
-    也足以在别处做关联（见 docs/security-conventions.md 报告规范）。
-    """
-    if not raw:
-        return ""
-    if keep and len(raw) > keep:
-        return f"{raw[:keep]}…<{len(raw)} chars>"
-    return f"<{len(raw)} chars>"
-
-
 # ── 启动校验 ──────────────────────────────────────────────────────
 def validate(*, need_worker_token: bool = True) -> list[str]:
     """返回缺失 / 有问题的必需配置项（空列表 = 就绪）。
@@ -426,6 +409,6 @@ def validate(*, need_worker_token: bool = True) -> list[str]:
     if has_slots and not SLOT_EGRESS_IPS:
         missing.append(
             "IR_SLOT_EGRESS_IPS（已配槽位池但缺「端口=出口IP」映射；"
-            "先跑 python tools/probe_slots.py 量出来）")
+            "先跑 python tools/probes/probe_slots.py 量出来）")
     return missing
 

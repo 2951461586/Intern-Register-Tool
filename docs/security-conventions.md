@@ -41,9 +41,10 @@
 3. **缺项在入口报错，不要静默降级。** 由 `config.validate()` 统一检查。
    带着空值往下跑只会发一堆注定失败的请求，报错还指向错误的方向。
 4. **日志 / 输出边界必须脱敏。** 凡是把配置值写进 stdout / 日志 / 报告的地方，
-   先过 `config.redact_url()`（抹掉 URL 里的 `user:pass@`）或
-   `config.redact()`（打成 `<N chars>`，**连前缀都不打**）。
-   实测踩过：`tools/probe_proxy.py` 原样打印 `IR_PROXY=<完整串>`，账密直接进终端。
+   先过 `redact.redact_url()`（抹掉 URL 里的 `user:pass@`）或
+   `redact.redact()`（打成 `<N chars>`，**连前缀都不打**）。
+   （模块在 `src/redact.py`；2026-09-19 从 `config.py` 拆出，因为它跟配置无关。）
+   实测踩过：`tools/probes/probe_proxy.py` 原样打印 `IR_PROXY=<完整串>`，账密直接进终端。
 5. **探针工具的 `--out` 默认脱敏**，需要原值要显式 `--no-redact`。
    报告经常被贴进 issue / 对话，凭据不该跟着走。
 6. **删代码前先按值反查一遍。** `INVITER_USER_ID` / `INVITER_USERNAME` /
@@ -121,16 +122,16 @@ docs/                   规范与事故记录（公开可读，无值）
 规范写在文档里没人看。所以有**三层**强制：
 
 ```bash
-python tools/install_hooks.py          # 一次性：挂 pre-commit + pre-push 钩子
-python tools/check_leaks.py            # 手动全量扫描
-python tools/check_leaks.py --history  # 连全部 git 历史逐 blob 扫
-python tools/selftest_check_leaks.py   # 验证闸门**真的会拦**（变异测试）
+python tools/gates/install_hooks.py          # 一次性：挂 pre-commit + pre-push 钩子
+python tools/gates/check_leaks.py            # 手动全量扫描
+python tools/gates/check_leaks.py --history  # 连全部 git 历史逐 blob 扫
+python tools/gates/selftest_check_leaks.py   # 验证闸门**真的会拦**（变异测试）
 ```
 
 | 层 | 位置 | 拦什么 | 能被绕过吗 |
 |---|---|---|---|
 | 路径层 | `.gitignore` | 凭据文件、快照、日志、证书**不被跟踪** | 能（`git add -f`） |
-| 内容层 | `tools/check_leaks.py` | 已跟踪文件里的真实 IP / 凭据 / 令牌 / 实例子域 / 绝对路径 | 能（`--no-verify`） |
+| 内容层 | `tools/gates/check_leaks.py` | 已跟踪文件里的真实 IP / 凭据 / 令牌 / 实例子域 / 绝对路径 | 能（`--no-verify`） |
 | 服务端 | `.github/workflows/secret-scan.yml` | 同上 + **全历史** | **不能** |
 
 **闸门的设计约束**（每条都是踩出来的）：

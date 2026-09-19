@@ -51,9 +51,8 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from _bootstrap import ROOT  # noqa: F401  （副作用：把仓库根加进 sys.path）
 
-ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_IN = ROOT / "results.json"
 DEFAULT_OUT = ROOT / "results.json"
 
@@ -105,7 +104,7 @@ def run_one(d: dict, *, headless: bool, create: bool, key_name: str,
     # ── Stage 3：登录 ─────────────────────────────────────────
     t = time.time()
     try:
-        from src.browser_login import BrowserSession
+        from src.browser import BrowserSession
 
         with BrowserSession(headless=headless) as sess:
             res = sess.login(rec.email, rec.password, verbose=False)
@@ -312,7 +311,7 @@ def main() -> int:
     print(f"台账 {len(existing)} 条 → 可用 {len(pool)} 条 → 本次跑 {n} 条"
           f"（并发 {args.workers}，"
           f"{'建新 key' if args.create else '仅幂等复用'}）")
-    print(f"⚠ 零注册请求：本工具不打注册接口，不会加深 B0000 封禁")
+    print("⚠ 零注册请求：本工具不打注册接口，不会加深 B0000 封禁")
     print("=" * 72)
 
     lock = threading.Lock()
@@ -372,7 +371,10 @@ def main() -> int:
         for r in results:
             b = r.get("balance_raw") or {}
             w = b.get("usage_windows") or {}
-            def fmt(k):
+            # ⚠ `w=w` 是**显式绑定**，不是冗余：`fmt` 是闭包，若不绑定就会捕获
+            #   循环变量 `w` 的**引用**。当前是在同轮内立即调用（所以行为正确），
+            #   但一旦有人把 `fmt` 存起来延后调用，全部窗口会变成最后一条记录的。
+            def fmt(k, w=w):
                 x = w.get(k) or {}
                 if not x:
                     return "-"

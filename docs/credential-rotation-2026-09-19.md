@@ -22,9 +22,9 @@
 
 | # | 凭据 | 曾暴露的位置 | 处数 | 去哪换 | 优先级 |
 |---|---|---|---|---|---|
-| 1 | **代理节点账密**（`host:port:user:pass` 里的 user/pass） | 旧历史中 `tools/probe_proxy.py` 的用法示例行；当前 HEAD 已占位化 | 1 条串 | 代理服务商控制台 → 重置该节点/套餐的密码 | 🔴 高 |
-| 2 | **代理出口 IP（4 个槽位出口 + 本机直连出口）** | 旧历史中 `README.md` / `src/proxypool.py` / `tools/probe_slots.py` / `src/config.py` | 5 个 IP | 无法"改" IP —— 视为**已烧毁**：换订阅 / 换节点 / 换机房，重测后重填 `IR_SLOT_EGRESS_IPS` | 🔴 高 |
-| 3 | **代理服务商身份**（服务商名 + 套餐/订阅号） | 旧历史中 `tools/gen_mihomo_slots.py` 的 docstring 与注释 | 4 处 | 无需"换"，但要意识到它已公开 —— 评估是否需要换服务商 | 🟡 中 |
+| 1 | **代理节点账密**（`host:port:user:pass` 里的 user/pass） | 旧历史中 `tools/probes/probe_proxy.py` 的用法示例行；当前 HEAD 已占位化 | 1 条串 | 代理服务商控制台 → 重置该节点/套餐的密码 | 🔴 高 |
+| 2 | **代理出口 IP（4 个槽位出口 + 本机直连出口）** | 旧历史中 `README.md` / `src/proxypool.py` / `tools/probes/probe_slots.py` / `src/config.py` | 5 个 IP | 无法"改" IP —— 视为**已烧毁**：换订阅 / 换节点 / 换机房，重测后重填 `IR_SLOT_EGRESS_IPS` | 🔴 高 |
+| 3 | **代理服务商身份**（服务商名 + 套餐/订阅号） | 旧历史中 `tools/ops/gen_mihomo_slots.py` 的 docstring 与注释 | 4 处 | 无需"换"，但要意识到它已公开 —— 评估是否需要换服务商 | 🟡 中 |
 
 ## 二、需确认（大概率未泄漏，但要自己核一遍）
 
@@ -50,14 +50,14 @@
 1. **更新本机 `.env`** —— 新值只写这里（`.env` 被 `.gitignore` 的 `.env.*` 家族规则挡住）。
 2. **重测出口 IP 并迁移台账**（换节点后出口 IP 会变）：
    ```bash
-   python tools/probe_slots.py                    # 量出真实出口 IP
+   python tools/probes/probe_slots.py                    # 量出真实出口 IP
    # 把结果写进 .env 的 IR_SLOT_EGRESS_IPS
-   python tools/migrate_quota_scope.py --apply    # 迁移台账（旧记录挂在旧 IP 名下）
+   python tools/data/migrate_quota_scope.py --apply    # 迁移台账（旧记录挂在旧 IP 名下）
    ```
 3. **确认闸门在跑**：
    ```bash
-   python tools/install_hooks.py        # 钩子不随仓库分发，新 clone 要重装
-   python tools/selftest_check_leaks.py # 确认它真的会拦
+   python tools/gates/install_hooks.py        # 钩子不随仓库分发，新 clone 要重装
+   python tools/gates/selftest_check_leaks.py # 确认它真的会拦
    ```
 4. **通知 fork 持有者**（如果认识）：让他们删 fork 重建。删不掉就只能接受"旧凭据已公开"这个事实 —— 这也是为什么第 1、2 项必须轮换。
 

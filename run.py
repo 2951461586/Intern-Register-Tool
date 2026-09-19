@@ -12,7 +12,7 @@
   浏览器侧的并发数。注册阶段（纯 HTTP）由生产者池并发跑在前面，
   与浏览器阶段流水线重叠，所以 workers 不是"总并发"，而是"同时在跑的浏览器数"。
 
-  🔴 默认值从 2 调到 4，依据是**实测**（`tools/probe_login_only.py`，
+  🔴 默认值从 2 调到 4，依据是**实测**（`tools/probes/probe_login_only.py`，
   2026-09-15 晚，只测登录阶段以隔离掉注册配额这个混杂因素）：
 
       workers  账号数  总耗时   每账号   单账号中位   失败
@@ -41,10 +41,11 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+from src import proxypool, redact  # noqa: E402
 from src.ledger import load_existing as _load_existing  # noqa: E402
 from src.ledger import merge_records as _merge_records  # noqa: E402
 from src.ledger import save as _save_ledger  # noqa: E402
-from src.pipeline import run_batch  # noqa: E402
+from src.pipeline import ERR_QUOTA, error_kind_of, run_batch  # noqa: E402
 
 
 def _fmt_ms(v):
@@ -71,8 +72,7 @@ def main():
     args = ap.parse_args()
 
     # 启动校验：缺凭据就立刻失败，别等跑了一半才发现全是 401。
-    from src import config
-    from src import quota
+    from src import config, quota
 
     missing = config.validate()
     if missing:
@@ -103,7 +103,7 @@ def main():
                 #    ⚠ 出口 IP 是**故意**打印的 —— 这张表的用途就是按出口看额度；
                 #    但正因如此，**这段输出不要粘进任何仓库 / issue**（见
                 #    docs/security-conventions.md「终端输出」一节）。
-                print(f"     slot{i} {config.redact_url(url):<26} 出口 {ip:<16} "
+                print(f"     slot{i} {redact.redact_url(url):<26} 出口 {ip:<16} "
                       f"{st.used:>2}/{config.REG_QUOTA_MAX}  {mark}", flush=True)
         except ValueError as ex:
             print(f"\n✗ 槽位出口 IP 未登记，拒绝开跑：\n  {ex}", file=sys.stderr)
@@ -147,6 +147,13 @@ def main():
               "        ③ 先确认服务端确实已恢复，再加 --ignore-quota。",
               file=sys.stderr)
         return 2
+    except proxypool.AllSlotsDead as ex:
+        # 🔴 槽位端口预检失败。这里**刻意给一个干净的报错**而不是让它抛 traceback：
+        #    这个失败模式的误读代价极高 —— 槽位进程没起来时，每条记录都会以
+        #    "代理连接错误"收场，而"注册全失败"在本项目里最容易被读成
+        #    "换 IP 也不行 / 还在封"。所以要把"是槽位没起来"这件事说在最前面。
+        print(f"\n✗ {ex}", file=sys.stderr)
+        return 4
     wall = time.time() - t0
 
     out = Path(args.out)
@@ -185,7 +192,7 @@ def main():
     #    `batch_total`（批次墙钟），导致这一列**每行都是同一个数**，
     #    看起来像"所有账号耗时一样"，其实是显示 bug（实测 510.0 刷满 39 行）。
     #    批次墙钟是**批次级**指标，跟单账号耗时不是一个东西，不能混进这一列。
-    print(f"\n耗时明细（秒）：")
+    print("\n耗时明细（秒）：")
     print(f"  {'email':40s} {'注册':>7s} {'登录':>7s} {'建Key':>7s} {'合计':>7s}")
     totals: list[float] = []
     for r in results:
@@ -206,7 +213,10 @@ def main():
               f"{total_s:>7s}")
     if totals:
         import statistics as _st
-        print(f"  {'── 统计（%d 个完整样本）' % len(totals):40s} "
+        # 表头单独取变量：原来写成 `{'…%d…' % len(totals):40s}` 嵌在 f-string 里，
+        # 两种插值语法叠在一起，UP031 会报。提取后只剩一种。
+        _hdr = f"── 统计（{len(totals)} 个完整样本）"
+        print(f"  {_hdr:40s} "
               f"{'':>7s} {'':>7s} {'':>7s} "
               f"{_st.mean(totals):>7.1f}")
         print(f"  {'   均值 / 中位 / 最快 / 最慢':40s} "
@@ -285,8 +295,8 @@ def main():
         print(f"  最快 {logins[0]:.1f}s · 中位 {logins[len(logins) // 2]:.1f}s "
               f"· 最慢 {logins[-1]:.1f}s · 极差 {logins[-1] - logins[0]:.1f}s")
         if logins[-1] > logins[0] * 1.5:
-            print(f"  ⚠ 极差超过最快值的 1.5 倍 —— 总时长多半由这个离群值决定，"
-                  f"不是均值")
+            print("  ⚠ 极差超过最快值的 1.5 倍 —— 总时长多半由这个离群值决定，"
+                  "不是均值")
 
     if results:
         tm0 = results[0].timings or {}
@@ -319,19 +329,24 @@ def main():
         #      完全无效，不要往那个方向排查。
         #    现在有了本地计数（src/quota.py）：开跑前拦 + 运行中 fail-fast。
         #    这里还有残留的，说明本地计数上限（REG_QUOTA_MAX）比服务端真实阈值高。
-        quota_hits = [r for r in bad if "B0000" in (r.error or "")]
+        #
+        # 🔴 判据走 `error_kind_of()`（结构化字段），不再搜 error 文本 ——
+        #    我们自己拼的守卫文案里也含 `B0000`，文本匹配会把主动中止算进来。
+        #    这里 `bad` 已经排除了 skipped，所以两种判据当前等价；改成字段
+        #    是为了让"以后新增一条含 B0000 的文案"不会悄悄改掉这个数字。
+        quota_hits = [r for r in bad if error_kind_of(r) == ERR_QUOTA]
         if quota_hits:
             print(f"\n  ⚠ 其中 {len(quota_hits)} 个是注册配额触顶（B0000 请求频繁）")
-            print(f"    这是**累计量**限制，不是瞬时速率 —— 调 REG_MIN_INTERVAL 无效。")
-            print(f"    实测：同一时段累计约 40 个账号后触发，需等待窗口恢复后再跑。")
-            print(f"    → 建议把 IR_REG_QUOTA_MAX 下调到本次触顶点，让本地保护更早拦住。")
+            print("    这是**累计量**限制，不是瞬时速率 —— 调 REG_MIN_INTERVAL 无效。")
+            print("    实测：同一时段累计约 40 个账号后触发，需等待窗口恢复后再跑。")
+            print("    → 建议把 IR_REG_QUOTA_MAX 下调到本次触顶点，让本地保护更早拦住。")
 
     if ok:
-        print(f"\n调用方式（OpenAI 兼容）：")
+        print("\n调用方式（OpenAI 兼容）：")
         print(f"  base_url = {config.CHAT_API_BASE}")
         print(f"  model    = {config.CHAT_MODELS[0]}")
         print(f"  api_key  = {ok[0].api_key}")
-        print(f"  ⚠ 不要用 chat.intern-ai.org.cn（那是网页版，要绑手机号）")
+        print("  ⚠ 不要用 chat.intern-ai.org.cn（那是网页版，要绑手机号）")
 
     # 收尾再报一次配额，让"本次消耗了几个"一眼可见。
     qs2 = quota.status()

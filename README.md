@@ -9,36 +9,21 @@ OpenXLab（上海人工智能实验室）账号自动注册 + API Key 提取工�
 实测：单账号 **~35s**（顺序）；批量 **10.2s / 账号**（`--workers 2`）、
 **2.4s / 账号**（`--workers 12`，只测登录阶段，见「workers 的边界」）。
 
-## 安全约定（先读这一节）
-
-本仓库是**公开**的，而它处理的东西天然带敏感标识（出口 IP、代理账密、
-Worker 子域、临时邮箱域名）。所以有三条硬约定，完整版见
-**[`docs/security-conventions.md`](docs/security-conventions.md)**：
-
-1. **凭据只进 `.env`，永不进代码 / 文档 / 历史。**
-   代码里读 `os.getenv()` 且**默认空**，缺项由 `config.validate()` 在入口报错。
-2. **风控标识按家族占位化**，不写真实值：
-
-   | 类别 | 占位符写法 |
-   |---|---|
-   | 出口 IP / 主机 IP | `203.0.113.x`（RFC 5737 保留段） |
-   | Worker 子域 | `https://<worker-name>.<your-subdomain>.workers.dev` |
-   | 邮箱域名 | `<your-mail-domain>` |
-   | 代理账密 | `<USERNAME>:<PASSWORD>` |
-   | 本机绝对路径 | `<你的 mihomo 可执行文件>` |
-   | 代理服务商 / 订阅名 | `<订阅名>` |
-
-3. **提交前过闸门。** 一条命令，命中即非 0 退出：
-
-   ```bash
-   python tools/install_hooks.py     # 一次性：挂上 pre-commit 钩子
-   python tools/check_leaks.py       # 手动全量扫描（默认扫全部历史）
-   python tools/selftest_check_leaks.py   # 验证闸门**真的会拦**（变异测试）
-   ```
-
-   `.gitignore`（路径层）与 `check_leaks.py`（内容层）是**两层**，
-   改了一层必须同步另一层 —— 否则会漂移成"一个放行一个拦截"。
-
+> **本仓库是公开的。** 凭据只进 `.env`（代码里一律 `os.getenv()` 且默认空，
+> 缺项由 `config.validate()` 在入口报错）；风控标识（出口 IP / Worker 子域 /
+> 邮箱域名 / 代理账密 / 本机绝对路径 / 订阅名）**一律按家族占位化**，
+> 出口 IP 用 RFC 5737 保留段 `203.0.113.x`。
+>
+> 完整规范（标识分类、目录规范、闸门两层关系、事故处置与轮换清单）见
+> **[`docs/security-conventions.md`](docs/security-conventions.md)**。
+> 提交前过闸门，命中即非 0 退出：
+>
+> ```bash
+> python tools/gates/install_hooks.py           # 一次性：挂上 pre-commit 钩子
+> python tools/gates/check_leaks.py             # 手动全量扫描（默认扫全部历史）
+> python tools/gates/selftest_check_leaks.py    # 验证闸门**真的会拦**（变异测试）
+> ```
+>
 > ⚠️ `run.py` 的槽位预检表**会**打印出口 IP（那是它的用途：按出口看额度）。
 > 这段输出**不要粘进任何仓库、issue 或对话**。
 
@@ -67,12 +52,18 @@ python run.py --shot debug
 
 # 7. 规模化：起槽位代理池 —— 一次注册多个账号、每个走不同出口 IP
 #    （本机出口 IP 已被注册封禁时必须走这条，见「槽位代理池」一节）
-python tools/gen_mihomo_slots.py --sub <订阅名> --slots 6 --filter 美国
-python tools/proxypool_ctl.py start  # 起独立 mihomo 实例（status/stop 同源）
-python tools/probe_slots.py          # 先量出真实出口 IP 个数 = 并发上限
+python tools/ops/gen_mihomo_slots.py --sub <订阅名> --slots 6 --filter 美国
+python tools/ops/proxypool_ctl.py start  # 起独立 mihomo 实例（status/stop 同源）
+python tools/probes/probe_slots.py          # 先量出真实出口 IP 个数 = 并发上限
 echo 'IR_PROXY_SLOTS_FILE=.workbuddy-ai/proxypool/slots.txt' >> .env
 python run.py --count 4 --workers 2 --headless
-python tools/proxypool_ctl.py stop   # 用完停掉
+python tools/ops/proxypool_ctl.py stop   # 用完停掉
+
+# 8. 改代码前后（质量门）
+python -m pytest -q                      # 行为测试（stdlib + pytest，零第三方）
+python -m ruff check .                   # 静态检查（配置在 pyproject.toml）
+python tools/gates/check_leaks.py        # 提交前：泄漏闸门
+python tools/gates/selftest_check_leaks.py   # 验证闸门**真的会拦**（变异测试，只用 stdlib）
 ```
 
 > 🔴 **凭据一律走 `.env` 或环境变量**，代码里没有任何硬编码 token。
@@ -121,7 +112,7 @@ python tools/proxypool_ctl.py stop   # 用完停掉
 | `IR_PROXY` | 未设 | `host:port:user:pass` 或 `scheme://user:pass@host:port`。作用于 **sso / discovery** |
 | `IR_PROXY_MAIL` | 未设 | 置 `1` 时**邮箱 Worker 也走代理**（默认直连，因为收信轮询是瓶颈） |
 
-选代理前先跑 `python tools/probe_proxy.py host:port:user:pass` —— 三个实测坑
+选代理前先跑 `python tools/probes/probe_proxy.py host:port:user:pass` —— 三个实测坑
 （TCP 连通不算数 / 状态码不算数 / 必须试真实目标域名）见该节。
 
 **槽位代理池（规模化：一次注册多个账号，每个走不同出口 IP，见「槽位代理池」一节）**
@@ -131,13 +122,38 @@ python tools/proxypool_ctl.py stop   # 用完停掉
 | `IR_PROXY_SLOTS_FILE` | 未设 | 槽位清单文件（**优先**）。一行一个或逗号分隔，`#` 注释。槽位多时用这个 |
 | `IR_PROXY_SLOTS` | 未设 | 槽位清单，逗号分隔。适合少量槽位 |
 | `IR_PROXY_COOLDOWN` | `120` | 槽位被判"出口被封"后的冷却秒数（**不是**永久拉黑） |
+| `IR_PROXY_COOLDOWN_MAX` | `21600` | 冷却退避的封顶（6h）。同一槽位反复被封时按 2 的幂递增 |
 | `IR_PROXY_SLOT_TIMEOUT` | `240` | 全池冷却时一个任务最多等多久，超时按失败记账 |
+| `IR_PROXY_STATE` | `.workbuddy-ai/state/proxypool.json` | 池子状态文件路径覆盖（冷却 + 封禁次数跨运行保留，见下） |
+| `IR_PROXY_PREFLIGHT` | `1` | 起飞前做槽位端口连通检查。置 `0` 跳过（离线自检必须跳） |
+| `IR_SLOT_EGRESS_IPS` | 未设 | `端口=出口IP` 映射。齐了才启用**同出口互斥**，见「槽位代理池」 |
 
 两个都没配 → `build_pool()` 返回 `None`，退回单代理行为（**不改变旧行为**）。
 配了之后 `run.py` 会打印 `🔀 槽位代理池已启用`，并且**跳过全局配额守卫**
 （本地计数是"老出口"的，改按槽位分别计）。
-配完先跑 `python tools/probe_slots.py` —— 它会把**去重后的真实出口 IP 个数**
+配完先跑 `python tools/probes/probe_slots.py` —— 它会把**去重后的真实出口 IP 个数**
 报出来，**那个数才是并发上限**（实测 6 个槽位只有 4 个不同出口）。
+
+### 🔴 池子状态会落盘：冷却与封禁次数**跨运行保留**
+
+`.workbuddy-ai/state/proxypool.json` 存"哪些出口在冷却、被封过几次"，
+建池时读回。**不保留的后果**：封禁退避是 120s → 240s → … → 6h，
+而服务端配额窗口是 **24h** —— 进程一退退避就重置回 120s，
+等于每重跑一次批量就在同一个被封的出口上重新撞一遍（一天约 720 次）。
+
+三条设计约束（改这个文件前先读）：
+
+1. **时间用墙钟 `time.time()`，不是 `time.monotonic()`** —— 状态要跨进程读写，
+   而 monotonic 的原点是进程启动时刻，两个进程之间没有可比性。
+   （`acquire()` 的等待超时仍是 monotonic，那是进程内时长；两套钟不混算。）
+2. **键是 `host:port`，不是槽位位置号** —— `slots.txt` 增删一条会让位置号整体平移，
+   冷却会静默错配到别的出口头上（同 `IR_SLOT_EGRESS_IPS` 那个坑）。用 `host:port`
+   也顺带避免了把槽位串里的代理账密写进文件。
+3. **读不出来就降级，不抛** —— 坏掉的状态文件不该让整批跑不起来。
+   最坏后果只是退避从第一档重来。
+
+租约（`_free` / `_ip_held`）与均衡计数（`_uses`）**不落盘** —— 前者是进程内的东西，
+后者从 0 重来无危害。
 
 
 ## 架构
@@ -164,6 +180,7 @@ python tools/proxypool_ctl.py stop   # 用完停掉
 ```
 run.py                 CLI 入口（含启动配置校验）
 requirements.txt       运行依赖
+pyproject.toml         工具链配置（ruff + pytest；`pythonpath = ["."]` 让 tests/ 直接 import src）
 .env.example           凭据模板（复制为 .env 后填值）
 .gitignore             排除 .env / 运行产物 / .workbuddy-ai
 
@@ -172,42 +189,92 @@ src/
   crypto_rsa.py        RSA 密码加密（复刻前端逻辑）
   tempmail.py          CF Worker 临时邮箱客户端（自适应轮询窗口）
   sso.py               SSO 注册 / 激活
-  browser_login.py     浏览器登录 + 验证码处理 + JWT 提取
+  browser/             浏览器登录子包 —— 2026-09-19 从 `browser_login.py`(955 行) 拆出
+                        🔴 **函数体逐字节未改**，只搬位置；等价性由
+                           `.workbuddy-ai/tmp/verify_stage_b_split.py` 复算（32/32 定义）
+    __init__.py        包 docstring（反检测 / 风控 / 两条验证码通路的实测结论）+ 公共 API re-export
+    constants.py       10 个可调常量（环境变量覆盖）
+                       ⚠ 各模块 `from .constants import X` 绑的是**副本** ——
+                         patch 要打在**读它的那个模块**上，打包级属性会**静默失效**
+    urls.py            `build_login_url()` —— 独立叶子，避免 attempt ↔ entry 循环导入
+    state.py           `LoginResult`（对外契约，字段名与顺序被测试冻结）+ `_AttemptState`
+    behavior.py        人类化鼠标轨迹（**风控真正评估的信号**，别为提速删掉）
+    captcha.py         验证码勾选框点击与滑块探测
+    attempt.py         一次尝试：8 个 `_step_*` + `_build_result` + `_run_attempt` 编排
+    session.py         `_launch_kwargs`（`chrome_args=` 注入面）+ `_retry_loop` + `BrowserSession`
+    entry.py           `login()` 单账号入口（不复用浏览器会话）
   discovery.py         discovery 平台（额度 / API Key）
   apikey.py            推理网关客户端（OpenAI 兼容）
-  pipeline.py          端到端编排（两段式流水线）
+  pipeline.py          端到端编排（两段式流水线 + `QuotaGovernor` 配额决策）
   quota.py             注册配额的本地累计计数与保护（见「注册配额」一节）
-  proxypool.py         槽位代理池（一槽一端口 = 一个固定出口 IP，租约式分配）
+  proxypool.py         槽位代理池（一槽一端口 = 一个固定出口 IP，租约式分配 + 状态落盘）
   ledger.py            账号台账（results.json）的读写与合并 —— **所有会写台账的工具都必须用它**
+  redact.py            脱敏助手（日志 / 输出边界必须过这里，见 docs/security-conventions.md）
 
-tools/                 诊断探针 —— 不参与主流程，用来给"改之前 / 改之后"取实测数据
-  probe_429.py             注册限流边界探测（绕开退避重试打裸请求）
-  probe_reg_interval.py    注册闸门间隔降序试探（见 429 边界表）
-  probe_captcha_timing.py  验证码通路 / 微移动预算对照实验（见「两条通路」）
-  probe_login_timing.py    登录时序探针：打字间隔 / 页面闲置对照实验（带事件时间线）
-  probe_login_route.py     登录页是否存在"直达密码表单"路由
-  probe_headless.py        无头模式可用性验证
-  probe_env.py             浏览器环境指纹导出
-  probe_quota_scope.py     判定封禁是 IP 维度还是邮箱域名维度（控制变量：只换域名）
-  probe_proxy.py           探测代理能否用于本项目（出口 IP / 归属 / 目标域名可达性）
-  probe_login_only.py      **只测登录**（用已有账号，不注册不建 key）—— 测 workers 天花板
-  probe_balance.py         **用已存 JWT 查额度**（不开浏览器，0.5s 查 15 个账号）
-  gen_mihomo_slots.py      从订阅生成 N 槽位 mihomo 配置 + slots.txt（见「槽位代理池」）
-  proxypool_ctl.py         **槽位实例的启停与体检**（按端口区分身份，绝不误杀 Clash Verge 主内核）
-  probe_slots.py           **探槽位池：去重后的真实出口 IP 个数 + 目标站可达性**
-  probe_register_ip.py     **决定性实验**：只打注册一枪，判定封禁是不是 IP 维度
-  run_downstream.py        **对已有账号跑下游全链路**（登录→额度→建/复用Key→真推理），零注册请求
-  recover_activation.py    **补激活**：救回"注册成功但激活失败"的账号
-  selftest_quota.py        配额模块自检（临时 state 隔离，60 项断言）
-  selftest_merge.py        台账合并逻辑 + 防缩水护栏自检（28 项断言，零网络）
-  selftest_proxypool.py    槽位池自检（30 项断言，零网络：均衡/阻塞/冷却/exclude/并发）
-  export_keys.py           导出历史 API Key（三重去重 + 输出目录 gitignore 校验 + 读自己的 CSV 自保）
-  restore_results.py       从散落来源重建台账（results.json / exports / tmp，按 `stages.register=="ok"` 判定）
-  check_keys_alive.py      检查 key 存活性（`/v1/models` 全量 + 抽样真实推理，含负对照）
+tests/                 pytest 行为测试 —— 断言从已移除的 `tools/selftests/*.py` **保真迁移**而来
+  conftest.py          autouse 夹具：把运行态文件（配额台账 / 池子状态）重定向到 tmp
+  test_proxypool.py    槽位池（均衡 / 冷却退避 / 同出口互斥 / 端口预检 / exclude / accept / 状态落盘）
+  test_quota.py        配额计数（窗口 / 触顶等待 / 并发追加 / 补录 / scope 隔离）
+  test_quota_governor.py 配额决策的**差分等价**（内嵌改造前的内联逻辑当参考实现）
+  test_error_kind.py   错误结构化字段（打标点 / 读点 / 新旧判据的分歧清单）
+  test_ledger_merge.py 台账合并（运行期）与防缩水护栏
+  test_ledger_fragments.py 碎片合并（重建台账）—— 字段只增不减 / 降级补缺口 / 键序
+  test_browser_login.py `src/browser/` 的**契约**（字段/键名冻结 + 重试循环 + 启动参数注入）
+                        —— 零浏览器；**刻意从真源子模块导入**，私有函数不走包，
+                           这样"旧路径还能用"的错觉会立刻变成 ImportError 而不是静默失效
+  test_redact.py       脱敏边界（userinfo / 空串 / 密码含 @ / keep 语义）
+
+  跑法：`python -m pytest -q`。CI 就只跑这个 + ruff（见 .github/workflows/ci.yml）。
+  🔴 测试链上**零第三方依赖**（只有 stdlib + pytest）—— 不需要
+     requests / cryptography / playwright，所以 CI 不用装运行依赖。
+  ⚠ 2026-09-19：原 `tools/selftests/*.py`（手搓断言框架，910 行）已移除 ——
+     它是 tests/ 的**重复实现**。删除前提是"迁移保真"已被变异验证证明
+     （改一处源码 → 新旧两套同时变红，漏测 0），见 docs/refactor-plan-2026-09-19.md §5.2。
+
+tools/                 脚本按职责分 4 个子目录。**不是 Python 包**（没有 __init__.py）
+  _bootstrap.py            把仓库根加进 sys.path（唯一实现）
+  run_downstream.py        **第二个入口**：对已有账号跑下游全链路（登录→额度→建/复用Key→真推理），零注册请求
+
+  probes/    13 个一次性诊断探针 —— 每个回答一个具体问题，**改代码前先取实测数据**
+             先读 probes/README.md：一览表写清了"每个探针回答什么问题 / 什么时候跑 /
+             看哪个数字 / 结论落在哪"。有 4 个的结论已被生产代码吸收，不必再跑。
+    probe_429.py             注册限流边界（绕开退避重试打裸请求）
+    probe_reg_interval.py    注册闸门间隔降序试探（见 429 边界表）
+    probe_captcha_timing.py  验证码通路 / 微移动预算对照实验（见「两条通路」）
+    probe_login_timing.py    登录时序：打字间隔 / 页面闲置对照实验（带事件时间线）
+    probe_login_route.py     登录页是否存在"直达密码表单"路由
+    probe_headless.py        无头模式可用性验证
+    probe_env.py             浏览器环境指纹导出
+    probe_quota_scope.py     封禁是 IP 维度还是邮箱域名维度（控制变量：只换域名）
+    probe_proxy.py           代理能否用于本项目（出口 IP / 归属 / 目标域名可达性）
+    probe_login_only.py      **只测登录**（用已有账号）—— 测 workers 天花板
+    probe_balance.py         **用已存 JWT 查额度**（不开浏览器，0.5s 查 15 个账号）
+    probe_slots.py           **探槽位池：去重后的真实出口 IP 个数 + 目标站可达性**
+    probe_register_ip.py     **决定性实验**：只打注册一枪，判定封禁是不是 IP 维度
+
+  gates/     泄漏闸门（命令见开头的指针块；规范见 docs/security-conventions.md）
+    check_leaks.py           内容层扫描（默认扫全部 git 历史）
+    install_hooks.py         一次性挂 pre-commit 钩子
+    selftest_check_leaks.py  变异测试：验证闸门**真的会拦**，不是摆设
+
+  ops/       运维（都带 --help）
+    proxypool_ctl.py         **槽位实例的启停与体检**（按端口区分身份，绝不误杀 Clash Verge 主内核）
+    gen_mihomo_slots.py      从订阅生成 N 槽位 mihomo 配置 + slots.txt（见「槽位代理池」）
+    cf_service_doctor.py     CF Worker 体检
+    check_keys_alive.py      检查 key 存活性（`/v1/models` 全量 + 抽样真实推理，含负对照）
+
+  data/      台账读写（**全部经过 `ledger.py` 的合并入口**，不自己写 JSON）
+    export_keys.py           导出历史 API Key（三重去重 + 输出目录 gitignore 校验 + 读自己的 CSV 自保）
+    restore_results.py       从散落来源重建台账（合并规则用 `ledger.merge_fragments`）
+    recover_activation.py    **补激活**：救回"注册成功但激活失败"的账号
+    migrate_quota_scope.py   把老台账的配额计数迁到按出口 IP 记账
 ```
 
-> `tools/` 下的探针一律**从项目根**执行，例如 `python tools/probe_429.py`
-> （脚本内部按 `parents[1]` 定位项目根，不要 `cd tools` 后再跑）。
+> **怎么跑**：一律**从项目根**执行，例如 `python tools/probes/probe_429.py`。
+> 子目录里的 `_path.py` 负责把 `tools/` 与仓库根加进 `sys.path`（脚本移进子目录后
+> `sys.path[0]` 会变成子目录，直接 `from _bootstrap import ROOT` 会失效）。
+> ⚠️ 别把它改名成 `_bootstrap.py` —— 那样会 import 到自己，报
+> `cannot import name 'ROOT' from partially initialized module`。
 
 ---
 
@@ -250,7 +317,7 @@ tools/                 诊断探针 —— 不参与主流程，用来给"改之
 REG_MIN_INTERVAL = 1.2   # 两次 register/byEmail 之间的最小间隔
 ```
 
-**边界是实测出来的**（`.workbuddy-ai/tmp/probe_reg_interval.py`）——
+**边界是实测出来的**（`tools/probes/probe_reg_interval.py`）——
 关键是要**绕开 `_post()` 的退避重试**打裸请求，否则 429 被吞掉，永远探不到边界：
 
 | 间隔 | 成功 | 429 | 平均耗时 |
@@ -286,7 +353,7 @@ REG_MIN_INTERVAL = 1.2   # 两次 register/byEmail 之间的最小间隔
 
 #### 第二轮：只测登录（隔离掉注册配额）
 
-注册被 IP 封掉后，改用**已有账号只测登录**（`tools/probe_login_only.py`）——
+注册被 IP 封掉后，改用**已有账号只测登录**（`tools/probes/probe_login_only.py`）——
 登录不消耗注册配额，于是浏览器侧的天花板终于能被单独观测：
 
 | workers | 账号数 | 总耗时 | 每账号 | 单账号中位 | 最慢 | 失败 |
@@ -379,7 +446,7 @@ probe_quota    尝试 1  成功 0   B0000 1   ← 单账号也失败，限流未
 <域名 B>    → HTTP 200  {"traceId":..., "msgCode":"B0000", ...}   ← 换域名无效
 ```
 
-→ **换发信域名没用**，只能等窗口或换出口 IP。`tools/probe_quota_scope.py` 可复现。
+→ **换发信域名没用**，只能等窗口或换出口 IP。`tools/probes/probe_quota_scope.py` 可复现。
 
 #### 🔴 换出口 IP 才是对症解法，但要先查清 IP 的"类型"
 
@@ -440,11 +507,11 @@ HTTP 403   Proxy-Authenticate: Basic real=""
 **用 80 端口回退**去问那句明确的拒绝原因 —— 否则只能报"不通"，
 而"被代理拦截"和"网络不通"的处置方式完全不同。
 
-**怎么用**（`tools/probe_proxy.py`）：
+**怎么用**（`tools/probes/probe_proxy.py`）：
 
 ```bash
-python tools/probe_proxy.py host:port:user:pass [更多...]
-python tools/probe_proxy.py --file proxies.txt        # 每行一条
+python tools/probes/probe_proxy.py host:port:user:pass [更多...]
+python tools/probes/probe_proxy.py --file proxies.txt        # 每行一条
 ```
 
 输出三档判定：`可用` / `被代理拦截` / `不通`，并给出出口 IP 的
@@ -498,7 +565,7 @@ proxies = merge_setting(proxies, self.proxies)  # ← 已存在的键不覆盖
 `listeners[]` = 一个本地端口 = 一个固定出口 IP；程序侧按**租约**把端口分给 worker。
 
 ```
-订阅(机场) ──> tools/gen_mihomo_slots.py ──> .workbuddy-ai/proxypool/config.yaml
+订阅(机场) ──> tools/ops/gen_mihomo_slots.py ──> .workbuddy-ai/proxypool/config.yaml
                                               + slots.txt（6 条 http://127.0.0.1:790N）
                                                         │
 独立 mihomo 实例 ──监听 7901..7906───────────────────────┘
@@ -512,20 +579,20 @@ run.py ──> run_batch ──> build_pool() ──acquire()──> worker 独�
 
 ```bash
 # 1) 生成槽位配置（顺带写出 slots.txt）
-python tools/gen_mihomo_slots.py --sub <订阅名> --slots 6 --filter 美国
+python tools/ops/gen_mihomo_slots.py --sub <订阅名> --slots 6 --filter 美国
 
 # 2) 起**独立** mihomo 实例（别动 Clash Verge —— 它把 TCP 控制器关了，
 #    而且改它的配置会影响你正常上网）
-python tools/proxypool_ctl.py start        # 推荐：带身份校验 + 端口复查
+python tools/ops/proxypool_ctl.py start        # 推荐：带身份校验 + 端口复查
 # 等价于手写：
 #   "<你的 mihomo 可执行文件>" \
 #       -d .workbuddy-ai/proxypool -f .workbuddy-ai/proxypool/config.yaml
 
 # 3) **先探测再跑**（必做，见下）
-python tools/probe_slots.py
+python tools/probes/probe_slots.py
 ```
 
-**🔴 停实例 / 体检：`python tools/proxypool_ctl.py status|stop|start|restart`**
+**🔴 停实例 / 体检：`python tools/ops/proxypool_ctl.py status|stop|start|restart`**
 
 **这台机器上同时跑着 3 个 `verge-mihomo.exe`，而且它们的可执行文件路径、
 进程名完全一样**：
@@ -564,7 +631,7 @@ python tools/probe_slots.py
 > 下一次调用就没了」（实测踩到，一开始还以为是工具写错了）。
 > 那种环境要么用宿主提供的后台执行能力起，要么在自己的终端窗口里跑。
 >
-> 判断它还在不在：`python tools/proxypool_ctl.py status`
+> 判断它还在不在：`python tools/ops/proxypool_ctl.py status`
 > 或 `netstat -ano | grep -E "790[0-9]"`（有 `LISTENING` 就活着）。
 > **它和 Clash Verge 是两个进程、两份配置，互不干扰** —— 别指望 Clash Verge
 > 顺手带上它，也别去改 Clash Verge 的配置。
@@ -593,7 +660,7 @@ SLOT-06 (7906) -> 203.0.113.11   ← 与 01 重复
 
 同机房的多台机器常常共用同一个 NAT 出口。所以**"我配了 6 个槽位"不等于
 "我能并发 6 个账号"** —— 真实上限是**去重后的出口 IP 个数**。
-`tools/probe_slots.py` 就是量这个数的：
+`tools/probes/probe_slots.py` 就是量这个数的：
 
 ```
 槽位总数      : 6
@@ -617,7 +684,7 @@ SLOT-06 (7906) -> 203.0.113.11   ← 与 01 重复
 
 **🔴 坑三：判据必须按**真实出口 IP**去重，不是按槽位号**
 
-`tools/probe_register_ip.py` 只打注册一枪、不激活不建 key，用来做决定性实验。
+`tools/probes/probe_register_ip.py` 只打注册一枪、不激活不建 key，用来做决定性实验。
 它的做法是**先探所有出口 IP、按真实 IP 去重、再逐个打枪** ——
 按槽位号去重会把同一个出口打两次，得出"换 IP 也没用"的错误结论。
 
@@ -659,9 +726,13 @@ SLOT-06 (7906) -> 203.0.113.11   ← 与 01 重复
    若所有出口都被封，`acquire()` 会阻塞到超时（`IR_PROXY_SLOT_TIMEOUT`），
    效果等价于"停下来"，但不会误伤干净的出口。
 
-**自测**：`python tools/selftest_proxypool.py`（30 项，零网络）——
+**自测**：`python -m pytest tests/test_proxypool.py`（48 项，零网络）——
 覆盖均衡分配、全忙阻塞超时、重复归还幂等、长/短冷却分档、冷却到期自动恢复、
-`exclude` 向前推进、4 线程并发不重不漏。
+`exclude` 向前推进、4 线程并发不重不漏、状态落盘与跨池续退避。
+
+> 原 `tools/selftests/selftest_proxypool.py`（手搓框架，36 项）已于 2026-09-19 移除 ——
+> 它是这个文件的**重复实现**。移除前用变异验证确认过覆盖等价
+> （改一处源码 → 新旧两套同时变红，漏测 0）。
 
 #### 🔴 修正三：**两层限流是两套不同的系统**，同秒连发会盖掉真实结果
 
@@ -719,11 +790,28 @@ HTTP 200   {"traceId": "...", "msgCode": "B0000", "success": false}
 "看到前序请求的结果"。→ 通用教训：**停止检查必须放在串行点之后，放在并发窗口
 之前只能挡住尚未启动的任务。**
 
-**验证**（`tools/selftest_quota.py` + 端到端三路径）：
+**代码位置**：账本住在 `src/quota.py`（窗口计数 + 补录），三处决策点收在
+`src/pipeline.py::QuotaGovernor`：
+
+| 方法 | 对应层 | 职责 |
+|------|--------|------|
+| `allow(count)` | ① 开跑前 | 窗口已满 → 抛 `QuotaExceeded`；余量不足 → 裁剪计划量并返回新值 |
+| `check_slot(idx)` | ② 运行中 | 给 `ThreadPoolExecutor` 的 accept 谓词用（**在串行点之后**） |
+| `claim_slot(scope)` | ② 运行中 | 拿到槽位租约后复查，返回跳过原因或 `""` |
+| `note_result(ok, rec)` | ② 运行中 | 结果哨兵：连续 2 个配额证据 → 置位停止标志 |
+| `hit()` / `streak()` | ③ 报告 | 供收尾统计读取 |
+
+这只是把原先散在 `run_batch` 里的内联逻辑**收拢成类，判据一字未改** ——
+`tests/test_quota_governor.py` 用**差分等价测试**钉住这一点：把改造前从 `HEAD`
+逐字抄下来的内联实现当参考实现（`_ref_*`），对同输入逐项断言新旧一致，
+另有一条用例**刻意钉住已知分歧**（守卫文案含 `B0000` 的两种形状），
+并用 AST 断言这些分歧形状**当前不可达** `settle_lease()`。
+
+**验证**（`python -m pytest tests/test_quota.py` + 端到端三路径）：
 
 | 验证 | 结果 |
 |------|------|
-| 模块自检（计数 / 两种 `check_or_raise` / 并发 append / 坏行 / 窗口 / 压缩 / 不可写 / 补录 / **超额等待**） | **46 / 46 通过** |
+| 模块测试（计数 / 两种 `check_or_raise` / 并发 append / 坏行 / 窗口 / 压缩 / 不可写 / 补录 / **超额等待**） | 全绿（`tests/test_quota.py`） |
 | 20 线程 × 5 次并发 append | **100 行零丢失**（这是最要紧的一条 —— 丢了就是静默放行） |
 | T1 窗口已满 → `--count 1` | 退出码 **2**，耗时 0.3s，**零网络请求**（state 行数不变，实测） |
 | T2 余量 1/3、计划 5 → | 裁剪为 **2**，打印裁剪原因，结果恰 2 条 |
@@ -759,7 +847,7 @@ must_expire = max(used - limit + 1, 0)     # 未触顶时为 0
 
 ```bash
 # 用已有账号只测登录（不注册、不建 key，零注册配额消耗）
-python tools/probe_login_only.py --workers 6 --count 12 --offset 36
+python tools/probes/probe_login_only.py --workers 6 --count 12 --offset 36
 ```
 
 这也是本项目**测出浏览器侧并发天花板**的办法 —— 把注册这个混杂因素摘掉，
@@ -823,11 +911,11 @@ python tools/run_downstream.py --no-write           # 只看结果，不落盘
 | 方式 | 单账号 | 15 个账号 |
 |------|--------|----------|
 | 浏览器登录后查 | 15~24s + 一次验证码 + 一个 Chrome 进程 | ~300s |
-| **`tools/probe_balance.py`（JWT 直查）** | **~0.03s** | **0.5s** |
+| **`tools/probes/probe_balance.py`（JWT 直查）** | **~0.03s** | **0.5s** |
 
 ```bash
-python tools/probe_balance.py              # 所有带 jwt 的账号，并发 8
-python tools/probe_balance.py --show-ok    # 连未消耗的也逐条列
+python tools/probes/probe_balance.py              # 所有带 jwt 的账号，并发 8
+python tools/probes/probe_balance.py --show-ok    # 连未消耗的也逐条列
 ```
 
 这在本项目的处境下意义很大：**注册被封期间，台账里那批 09-15 签发、
@@ -933,7 +1021,7 @@ Path B（降级）    InitCaptchaV3 #1 ─ TRACELESS 预检 F001
 
 🔴 **这是本项目最反直觉的一条。**
 
-本机真实 Chrome 为 `152.0.7977.83`。实测（`.workbuddy-ai/tmp/probe_env.py`）：
+本机真实 Chrome 为 `152.0.7977.83`。实测（`tools/probes/probe_env.py`）：
 只加 `--disable-blink-features=AutomationControlled` 时，Chrome **原生**就已经是
 
 ```
@@ -969,7 +1057,7 @@ Object.keys(window)  → 无 cdc_/selenium/webdriver 残留
 **这是本项目最容易误判的一条。** 早期我把"优化前 4s / 优化后 8.19s"当成性能回归，
 其实是**拿两条不同的通路在比**。
 
-对照实验（`.workbuddy-ai/tmp/probe_captcha_timing.py`，各 3 轮，6/6 成功）：
+对照实验（`tools/probes/probe_captcha_timing.py`，各 3 轮，6/6 成功）：
 
 | 组 | 通路 | `captcha_wait` | `submit → jwt` | 点击次数 |
 |----|------|----------------|----------------|----------|
@@ -1068,7 +1156,7 @@ Object.keys(window)  → 无 cdc_/selenium/webdriver 残留
 | 页面加载后闲置 15s | 5.55s |
 
 → **窗口不是"页面加载后计时"，预加载策略无效。** 复现脚本见
-`tools/probe_login_timing.py --prewarm 15000`。
+`tools/probes/probe_login_timing.py --prewarm 15000`。
 
 > **通用判据**：给"重试 / 降级 / 兜底"型流程计时，必须把**走了哪条通路**
 > 和**这条路花了多久**一起记录（本工具记在 `captcha_stage.path` / `stages.captcha_path`）。
@@ -1213,7 +1301,7 @@ available_credits  ==  round(usage_windows["5h"].limit_credits
   只要 7d 已用 < 0.0005，round 到 3 位后照样显示 10.000。
 
 → **要判断额度真实状态，必须看 `usage_windows` 里每个窗口的 `used_credits`，
-  不能只看 `available_credits`。** `tools/probe_balance.py` 就是按这个原则写的。
+  不能只看 `available_credits`。** `tools/probes/probe_balance.py` 就是按这个原则写的。
 
 #### 7d 窗口是**固定周期桶**，不是滚动窗口
 
@@ -1336,13 +1424,13 @@ print(r.choices[0].message.content)
 | 64 | 34 | `'成功'` | `stop` |
 
 也就是说 `max_tokens=32` 时，模型把预算全花在推理上、还没开始写正文就被截断了。
-**这不是 key 的问题**，但旧版 `tools/check_keys_alive.py` 用 32 且只看
+**这不是 key 的问题**，但旧版 `tools/ops/check_keys_alive.py` 用 32 且只看
 `ok` 标志（HTTP 200 + 有 choices 就算 ok），会把这种情况显示成"推理没输出"，
 看报告的人会去排查一把其实完好的 key。
 
 修法（两处）：
 
-1. `tools/check_keys_alive.py` 把 `max_tokens` 提到 **128**；
+1. `tools/ops/check_keys_alive.py` 把 `max_tokens` 提到 **128**；
 2. `src/apikey.py` 的 `ChatResult` 增加 `finish_reason` / `reasoning` 字段和
    `truncated` 属性 —— 这样调用方能区分**"被截断"**和**"真的没内容"**。
    `ok=True` 的语义只是"网关接受了并给了 choices"，**不代表正文非空**。
@@ -1569,14 +1657,14 @@ Worker 现在 100% 打不通，激活拿不到邮件。两条路都**在另一�
 无 `CLOUDFLARE_API_TOKEN`），所以这一步没法自动做。
 D1 database_id 在 `wrangler.toml` 的 `database_id` 字段里（也可用 `wrangler d1 list` 查）。
 
-**救已注册但没激活的账号**：`tools/recover_activation.py`
+**救已注册但没激活的账号**：`tools/data/recover_activation.py`
 
 ```bash
 # 列出候选（判据：stages.register == "ok" 且 activate 未成功）
-python tools/recover_activation.py --from results.json --dry-run
+python tools/data/recover_activation.py --from results.json --dry-run
 
 # 真补激活，并把结果并集写回台账
-python tools/recover_activation.py --from results.json --write
+python tools/data/recover_activation.py --from results.json --write
 ```
 
 判据卡在 `stages.register == "ok"` 上，**不是**只看 `status == "failed"` ——
@@ -1701,7 +1789,7 @@ done             +  0.00s
 
 ## 输出
 
-`results.json` 每个账号一条记录：
+`results.json` 每个账号一条记录（字段顺序就是 `AccountRecord.to_json()` 的顺序）：
 
 ```json
 {
@@ -1714,27 +1802,70 @@ done             +  0.00s
   "key_id": "ak_...",
   "credits": "10.000000",
   "status": "success",
+  "error": "",
+  "error_kind": "",
   "stages": {
     "register": "ok",
     "activate": "ok",
     "login": "ok",
     "key": "ok",
     "verify": "ok(10 models)"
-  }
+  },
+  "timings": { "register": 8200, "login": 17500, "key": 900 },
+  "created_at": "2026-09-19 15:04:05",
+  "proxy_slot": "slot3(http://127.0.0.1:17913)"
 }
 ```
 
+| 字段 | 什么时候有 | 说明 |
+|------|-----------|------|
+| `proxy_slot` | 槽位池模式 | 这个账号注册时用的出口槽位。**记它是为了事后能回答"被封的到底是哪个出口"** —— 光看 `B0000` 不知道维度。空 = 没启用槽位池 |
+| `error` | 失败时 | 给人看的错误文本 |
+| `error_kind` | 失败时 | 给代码判断的结构化类别，见下 |
+
 > 注意 `verify` 只做**轻量校验**（能列模型即通过）—— 它**不证明能推理**。
 > 要证明"真能用"必须真发一次 `chat/completions`，见
-> `tools/check_keys_alive.py`（它两级都做）。本项目吃过亏：
+> `tools/ops/check_keys_alive.py`（它两级都做）。本项目吃过亏：
 > 接口返回 200 + 一个 `sk-` 字符串，并不等于这个 key 能用。
+
+### 🔴 `error_kind`：错误的**结构化类别** —— 不要再搜 `error` 文本
+
+| 值 | 含义 | 判据来源 |
+|---|---|---|
+| `""` | 没有错误 | — |
+| `"quota"` | 服务端返回 `B0000` —— **出口维度**累计配额触顶 | 服务端响应 |
+| `"quota_guard"` | 本地守卫主动中止，**一个请求都没发** | 本地 |
+| `"rejected"` | 服务端明确拒绝（非配额）：注册被拒 / 激活邮件没到 / `activate` 返回 false | 服务端响应 |
+| `"network"` | 网络 / 超时 / HTTP 层 | 异常 |
+| `"browser"` | 浏览器阶段（登录 / 建 key / worker 起不来） | 异常 |
+
+**为什么必须有这个字段。** 在这之前，判断"这个失败是不是出口被封"靠
+**在 `error` 文本里搜 `B0000`**。而**我们自己拼的守卫文案里也含 `B0000`**：
+
+```
+quota guard: 已确认 B0000（累计配额触顶），未发注册请求
+```
+
+文本匹配分不清"服务端返回的"和"我们引用的"。代价是实打实的 ——
+`QuotaGovernor.note_result` 早就为此单独加了一句排除，注释写着
+「不排除就会被当成新证据重复计数」；而 `settle_lease` 里同样的地雷还埋着：
+一旦踩上，一个**一个请求都没发的干净出口**会被按长冷却晾 120s
+（被封 120s vs 偶发故障 20s，差 6 倍）。
+
+读点统一走 `pipeline.error_kind_of(rec)`：**字段非空即权威**，只有字段为空时
+才退化成文本匹配（那是给老台账 / 手工构造的记录兜底的）。
+**新增失败路径时必须在抛出点打标**，否则读点会静默退化成文本匹配。
+
+`tests/test_error_kind.py` 钉住了三件事：每条路径打出的标、读点的权威性与兜底、
+以及**新旧判据的分歧清单**（只有两条，且都不可达 —— 见
+`tests/test_quota_governor.py::test_divergent_shapes_cannot_reach_settle_lease`）。
 
 ### 辅助产物（`.workbuddy-ai/exports/`，全部 gitignored）
 
 | 文件 | 内容 |
 |------|------|
-| `keys_export.csv` / `.json` / `keys_only.txt` | 历史 key 导出（`tools/export_keys.py`） |
-| `keys_alive.json` | 存活性报告（`tools/check_keys_alive.py`）：`total/alive/dead/error` + 抽样推理结果 |
+| `keys_export.csv` / `.json` / `keys_only.txt` | 历史 key 导出（`tools/data/export_keys.py`） |
+| `keys_alive.json` | 存活性报告（`tools/ops/check_keys_alive.py`）：`total/alive/dead/error` + 抽样推理结果 |
 
 **⚠ 前缀过滤会静默丢行**：`check_keys_alive.py` 只认 `api_key` 以 `sk-` 开头的行。
 平台一旦改前缀（或 CSV 列名变了），它会**少测而不报错**，报告照样"全绿"。
@@ -1771,7 +1902,7 @@ done             +  0.00s
 
 ```bash
 # 1. 定期导出（落 .workbuddy-ai/exports/，三重去重 + 目录 gitignore 校验）
-python tools/export_keys.py
+python tools/data/export_keys.py
 
 # 2. 导出文件本身也要另存到别处（网盘 / 加密盘 / 密码管理器）
 #    工具会读自己上一次的 CSV 作为来源，所以重跑不会缩水（53 → 15 那种事不会再发生）
@@ -1792,7 +1923,8 @@ python tools/export_keys.py
 （这已经是**第二次**同类事故 —— 第一次是 `_backups/` 被清理。）
 
 修复分三层，全部落在 `src/ledger.py`，**被所有会写台账的工具复用**
-（`run.py` / `tools/run_downstream.py` / `tools/restore_results.py`）：
+（`run.py` / `tools/run_downstream.py` / `tools/data/recover_activation.py` 用
+`merge_records`；`tools/data/restore_results.py` 用 `merge_fragments`）：
 
 1. **默认合并，不覆盖**。按 `email` 去重；老记录里本次没跑到的**保留**。
 2. **失败不盖掉成功**。`status` 有优劣序（`success` 2 > `skipped` 1 > 其他 0），
@@ -1813,15 +1945,31 @@ python tools/export_keys.py
 4. **防静默缩水护栏**：`ledger.save()` 发现"合并后条数 < 原有条数"直接抛异常、
    退出码 3，宁可报错也不静默丢账号。要显式覆盖得用 `run.py --overwrite`。
 
-规则本身由 `tools/selftest_merge.py` 离线钉住（**28 项断言，零网络请求**）：
+### 重建台账时的合并规则**不同**（`merge_fragments`）
+
+`tools/data/restore_results.py` 从散落来源重建台账，用的是 `ledger.merge_fragments()`，
+而不是 `merge_records()`。看着像重复，其实**降级行为必须不同**：
+
+| | `merge_records`（运行期） | `merge_fragments`（重建） |
+|---|---|---|
+| 降级记录是什么 | **一次失败尝试**（带 `error` / 中间态） | **`export_keys` 的导出行**（带 `source` / `verify`） |
+| 降级时 | **不动** | **补缺口** |
+
+2026-09-19 实测：把 `restore_results` 改成调用 `merge_records`，
+**15 个账号丢 18 个字段**（`source` × 15、`verify` × 3），而这 15 个账号本来
+都够得着理论最大字段集。完整推导见 `src/ledger.py` 的 `merge_fragments` docstring。
+
+规则本身由 `tests/test_ledger_merge.py` + `tests/test_ledger_fragments.py`
+离线钉住（**零网络请求**）：
 
 ```bash
-python tools/selftest_merge.py      # 通过 28 / 28
+python -m pytest tests/test_ledger_merge.py tests/test_ledger_fragments.py
 ```
 
-台账已经丢过两次，所以这里宁可多写测试。`selftest_merge.py` 覆盖：
+台账已经丢过两次，所以这里宁可多写测试。两个文件覆盖：
 不丢历史 / 失败不盖成功 / 成功覆盖失败 / 同 email 去重 / 无 email 保留 /
-损坏文件不崩 / 护栏（变少→抛且文件未改动）/ 并集合并 / rank 优先于字段数。
+损坏文件不崩 / 护栏（变少→抛且文件未改动）/ 并集合并 / rank 优先于字段数 /
+碎片合并（导出行补缺口、键取并集、与 `merge_records` 的对照）。
 
 ## 能不能走纯协议？——不能，成本极高
 
@@ -1855,7 +2003,7 @@ WEB#<machineId>-h-<毫秒时间戳>-<随机数>#<签名>
 ## 无头浏览器：实测可用 ✅
 
 > ⚠️ 早期文档写过"`--headless` 会被验证码识别，必须 headful" —— **那是推断，且是错的。**
-> 在最小化注入 + 人类轨迹的实现下实测三组无头配置（`.workbuddy-ai/tmp/probe_headless.py`）：
+> 在最小化注入 + 人类轨迹的实现下实测三组无头配置（`tools/probes/probe_headless.py`）：
 
 | 配置 | 额外参数 | 结果 | 耗时 |
 |------|----------|------|------|
@@ -1917,7 +2065,7 @@ python run.py --headless        # 无头跑，不弹窗口
   带 `email` 过滤那条路径**一律 500**。
   → **在 Worker 真正修好前不要跑批量注册** —— 每次注册都在花全站共享的 D1 读取，
   打满之后连你自己也读不出来。详见「CF Worker 临时邮箱」一节。
-  已注册未激活的账号可用 `tools/recover_activation.py` 补激活（**同样要等 Worker 恢复**）
+  已注册未激活的账号可用 `tools/data/recover_activation.py` 补激活（**同样要等 Worker 恢复**）
 - **整条链路真正的约束是"每账号每周 50 credits"**（见「免费额度的真实结构」），
   不是本地的任何并发参数。53 个账号 ≈ 2,650 credits/周。
   **要规模化只能靠更多账号（本机被封时 = 更多出口 IP）**
@@ -1931,12 +2079,12 @@ python run.py --headless        # 无头跑，不弹窗口
 - **账号池里已有 3 个账号的 7d 额度被外部消耗**（0.43 / 0.98 / 1.98 credits，
   2026-09-18 实测）。本项目自己的测试调用一次约 0.0001 credits，**量级差 4 个数量级**
   → 消耗不是本项目产生的。导出过的 key 在别处被真实使用过。
-  用 `tools/probe_balance.py` 可复查消耗增速
+  用 `tools/probes/probe_balance.py` 可复查消耗增速
 - **`ok=True` 不等于"有正文"**：默认模型带 reasoning，`content` 可能因
   `max_tokens` 被推理占满而为空（见「`max_tokens` 给太小会把好 key 报成坏的」）。
   下游判"成功"要一起看 `finish_reason`，别只看 HTTP 200
 - **53 把 key 的存活性只代表"当下"**：平台随时可能回收额度或封 key。
-  `tools/check_keys_alive.py` 是可重复的复查手段（含负对照验证），
+  `tools/ops/check_keys_alive.py` 是可重复的复查手段（含负对照验证），
   但它读的是导出 CSV —— 导出文件本身要是丢了，就无从复查（见上一节）
 
 ---

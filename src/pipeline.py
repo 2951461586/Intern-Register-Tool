@@ -41,8 +41,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import asdict, dataclass, field
 
-from . import config
-from . import quota
+from . import config, quota
 from .discovery import DiscoveryClient
 from .proxypool import NoEligibleSlot, build_pool
 from .sso import SSOClient
@@ -57,7 +56,7 @@ REG_CONCURRENCY = 4
 #    429 拒绝，而只读的 `personal/username/check` 8 路并发也不限流。
 #    → 限流挂在**写操作 + 突发**上，不是笼统的 IP 速率限制。
 #
-# 边界实测（`.workbuddy-ai/tmp/probe_reg_interval.py`，绕开退避重试打裸请求，
+# 边界实测（`tools/probes/probe_reg_interval.py`，绕开退避重试打裸请求，
 # 降序试探 + 见 429 即停）：
 #
 #     间隔    成功  429   平均耗时
@@ -85,9 +84,70 @@ QUOTA_MSG_CODE = "B0000"
 QUOTA_STREAK_STOP = 2
 
 
+# ── 错误分类（`AccountRecord.error_kind`）────────────────────────────
+#
+# 为什么要有这个字段：在这之前，"这个失败是不是出口被封"靠**在 error 文本里
+# 搜 `B0000`** 判断。文本匹配有两个毛病：
+#
+#   ① 我们自己拼的**守卫文案**里也引用了 `B0000`
+#      （`"quota guard: 已确认 B0000（累计配额触顶），未发注册请求"`）。
+#      于是"一个请求都没发的中止"会被读成"服务端确认的封禁"。
+#      `QuotaGovernor.note_result` 已经为此单独加了一句排除，注释写着
+#      「不排除就会被当成新证据重复计数」—— 同样的地雷在 `settle_lease`
+#      里还埋着（见那里的说明）。
+#   ② 改一句文案就可能悄悄改掉行为，而 diff 里看不出来。
+#
+# 结构化之后，"服务端到底返回了什么"由**打标点**决定，读点只认字段。
+# 打标点与读点分离：打标只在**真的拿到服务端响应**的地方做（`stage_register`），
+# 读点统一走 `error_kind_of()`。
+ERR_NONE = ""                # 没有错误
+ERR_QUOTA = "quota"          # 服务端返回 `B0000` —— **出口维度**累计配额触顶
+ERR_QUOTA_GUARD = "quota_guard"   # 本地守卫主动中止，**一个请求都没发**
+ERR_REJECTED = "rejected"    # 服务端明确拒绝了这次注册（非配额）
+ERR_NETWORK = "network"      # 网络 / 超时 / HTTP 层
+ERR_BROWSER = "browser"      # 浏览器阶段（登录 / 建 key）
+
+
 def is_quota_block(text: str) -> bool:
-    """判断错误文本是否表示**注册累计配额**触顶。"""
+    """判断**服务端返回文本**是否表示注册累计配额触顶。
+
+    ⚠ 这是**文本级**工具，只该用在"手里只有一段服务端响应文本"的地方
+    （如 `probe_register_ip.py` 判 `res.msg_code + res.msg`）。
+    **判断一条 `AccountRecord` 是不是被封，请用 `error_kind_of()`** ——
+    拿 `rec.error` 来喂这个函数会把我们自己拼的守卫文案也算进去。
+    """
     return QUOTA_MSG_CODE in (text or "")
+
+
+def _rec_field(rec, name: str) -> str:
+    """从 `AccountRecord` **或**从 `results.json` 读回来的 dict 里取一个字符串字段。
+
+    两种形态都要支持：流水线里是对象，而 `run.py` 走台账那条路时是 dict
+    （`json.loads(r.to_json())`）。非字符串一律当空串 —— 这几个字段只可能是字符串。
+    """
+    v = rec.get(name, "") if isinstance(rec, dict) else getattr(rec, name, "")
+    return v if isinstance(v, str) else ""
+
+
+def error_kind_of(rec) -> str:
+    """读一条记录的错误类别 —— **唯一读点**。接受 `AccountRecord` 或 dict。
+
+    规则：**字段非空即权威**。只有字段为空时才退化成文本匹配 ——
+    那是给"手工构造 / 从旧 `results.json` 读回来的记录"兜底的
+    （`error_kind` 是 2026-09-19 才加的字段，老记录里没有）。
+
+    🔴 `status == "skipped"` 永远返回"无配额证据"。这不是启发式，是逻辑：
+    中止意味着**一个请求都没发**，没有请求就不可能有服务端响应。
+    这条也顺带修掉了 `settle_lease` 里的地雷 —— 见那里的 docstring。
+    """
+    kind = _rec_field(rec, "error_kind")
+    if kind:
+        return kind
+    if _rec_field(rec, "status") == "skipped":
+        return ERR_NONE
+    if is_quota_block(_rec_field(rec, "error")):
+        return ERR_QUOTA
+    return ERR_NONE
 
 
 class _QuotaAbort(RuntimeError):
@@ -115,6 +175,176 @@ class _RateLimiter:
             self._next = now + self.min_interval
 
 
+class QuotaGovernor:
+    """配额决策的**唯一**去处 —— 把原先散在 `run_batch` 三处的判据收进一个对象。
+
+    为什么要收拢
+    ------------
+    改造前这三处判据散在 `run_batch` 里，而且**必须按运行模式分叉**：
+
+    | 时机 | 非池模式 | 槽位池模式 |
+    |---|---|---|
+    | 开跑前 | 用全局 scope 裁计划量 | **跳过**（全局计数是老出口的，拦了会误判） |
+    | 拿租约前 | — | 按**该出口**的 scope 预筛 `accept` |
+    | 拿到租约后 | — | 按该出口的 scope 再查一遍 |
+    | 运行中 | 连续 `QUOTA_STREAK_STOP` 个 `B0000` 就置位"停" | **不置位**（`B0000` 是出口维度，不是整批触顶） |
+
+    分叉本身是对的（理由见 `allow()` 与 `note_result()`），但散在三处之后，
+    看任何一处都推不出全局行为 —— 尤其"运行中哨兵只在非池模式生效"这条，
+    改造前是靠 `_note_register_result` 开头一句 `if pool is not None: … return`
+    隐式表达的，还得专门写注释解释为什么。
+
+    ⚠ **判据一字未改**。等价性由 `tests/test_quota_governor.py` 的差分测试保证 ——
+    那里内嵌了改造前从 `run_batch` 抄下来的原始内联逻辑，逐输入对比两者结论，
+    而不是靠"读代码觉得一样"。
+
+    ⚠ 这个类**有状态**（运行中哨兵要跨线程累计），但状态只有一个计数 + 一个
+    `Event`。不要往这里加别的东西 —— 它只该回答"现在能不能发请求"。
+    """
+
+    def __init__(self, *, pool=None, ignore: bool = False, log=print):
+        self.pool = pool
+        self.ignore = ignore
+        # 运行级日志（只有 `allow()` 用）。producer 级的日志带 `[i/n]` 前缀，
+        # 由调用方逐次传入 —— 见 `claim_slot()`。
+        self.log = log
+        self._hit = threading.Event()
+        self._lock = threading.Lock()
+        self._streak = 0
+
+    # ── 开跑前 ────────────────────────────────────────────────────
+    def allow(self, count: int) -> int:
+        """返回**实际允许投递**的账号数（可能被裁小）。"""
+        if self.ignore:
+            return count
+        if self.pool is not None:
+            # 🔀 槽位模式下**跳过全局守卫**：本地计数是**按出口 IP** 记的，
+            #    而这里的历史计数（scope 为空）属于老的单代理出口。拿它来拦
+            #    槽位批次会得到错误的结论（实测：53/40 "超额"，但 6 个新出口
+            #    其实一个都没用过）。改由每个 producer 按自己的 scope 单独检查。
+            self.log(f"ℹ 槽位模式：跳过全局配额守卫（本地计数 "
+                     f"{quota.status().describe()} 是**老出口**的，与新槽位无关）——\n"
+                     f"  改按槽位分别计数，每个出口各自独立。")
+            return count
+        # 🔴 为什么必须在**投递前**拦，而不是等失败再停：`B0000` 是累计量限制，
+        #    撞上之后**连单账号都注册不了**，继续投递只是在加深封禁、并制造
+        #    一堆假失败记录。宁可少跑几个，也不要撞墙。详见 src/quota.py。
+        # allow_partial：还有余量就放行（这里自己裁计划量），余量为 0 才抛。
+        st = quota.check_or_raise(planned=count, allow_partial=True)
+        if st.used + count > st.limit:
+            keep = st.remaining
+            self.log(f"⚠ 本地配额保护：计划注册 {count} 个，但{st.describe()} "
+                     f"—— 本次只跑 {keep} 个。\n"
+                     f"  想全跑：调大 IR_REG_QUOTA_MAX，或加 --ignore-quota"
+                     f"（先确认服务端确实已恢复）。")
+            return keep
+        return count
+
+    # ── 拿租约 ────────────────────────────────────────────────────
+    def check_slot(self, index: int) -> bool:
+        """`accept` 谓词：第 `index` 个出口**现在**还有额度吗（拿租约**之前**）。
+
+        🔴 不加这一步的话，池子只会按"用得最少"均分租约，已满的槽位会白白
+        吃掉一大半 —— 实测 50 个任务只成 16 个，而池子里明明还躺着 44 个
+        额度没用（全在没被分到的槽位上）。
+        """
+        if self.pool is None:
+            return True
+        try:
+            return not quota.status(
+                scope=config.slot_scope(self.pool.url_of(index))).exhausted
+        except ValueError:
+            # 端口没登记出口 IP：不敢用，否则配额会被静默记错地方。
+            return False
+
+    def claim_slot(self, scope: str, log=print) -> str:
+        """拿到租约后**再查一遍**。返回跳过原因，`""` = 放行。
+
+        🔴 为什么必须复查：`check_slot()` 是在**拿租约之前**判的，从拿到租约
+        到真正发请求之间，可能有别的线程把最后一点额度用掉了。
+
+        `log` 由调用方传入 —— producer 级的日志带 `[i/n]` 前缀，
+        收进 `self.log` 会把所有 producer 的输出混成一路。
+        """
+        st = quota.status(scope=scope)
+        if not st.exhausted:
+            return ""
+        log(f"跳过（出口 {scope} 配额保护：{st.describe()}）")
+        return (f"quota guard: 出口 {scope} 本地计数已满"
+                f"（{st.describe()}），未发请求")
+
+    # ── 运行中 ────────────────────────────────────────────────────
+    def note_result(self, ok: bool, rec) -> None:
+        """注册结果反馈 —— 运行中哨兵的**唯一**喂食口。"""
+        with self._lock:
+            if self.pool is not None:
+                # 🔀 槽位模式下 `B0000` 是**出口维度**的信号，不是"整批触顶"。
+                #    旧逻辑在这里会把整批后续任务标 skipped —— 而实测 3 个不同
+                #    出口都能注册成功，那样做等于**把还有余量的出口一起停掉**。
+                #    自我保护改由槽位冷却承担：被封的出口 120s 内不再分配；
+                #    若所有出口都被封，`acquire()` 会阻塞到超时，那些任务按失败
+                #    记账 —— 效果等价于"停下来"，但不会误伤干净的出口。
+                if ok:
+                    self._streak = 0
+                return
+            if ok:
+                self._streak = 0
+            elif rec.status == "skipped":
+                # 主动中止：没发请求，既不是配额证据也不是恢复证据。
+                # ⚠ 必须显式排除 —— 它的 error 文本里也含 B0000（是引用，
+                #   不是服务端返回），不排除就会被当成新证据重复计数。
+                # （`error_kind_of()` 现在也会把 skipped 归成"无证据"，
+                #  但这一句保留：它表达的是**语义**，不是补文本匹配的洞。）
+                pass
+            elif error_kind_of(rec) == ERR_QUOTA:
+                self._streak += 1
+                if self._streak >= QUOTA_STREAK_STOP:
+                    self._hit.set()
+            # 其他失败：不动计数。
+            # （若在这里清零，一个无关的失败就能把已确认的配额信号抹掉。）
+
+    def hit(self) -> bool:
+        """运行中已确认配额触顶。**只在非池模式下可能为真**（见 `note_result`）。"""
+        return self._hit.is_set()
+
+    def streak(self) -> int:
+        """当前连续 `B0000` 计数（诊断与测试用）。"""
+        return self._streak
+
+
+def settle_lease(pool, lease, ok: bool, rec) -> None:
+    """按注册结果归还槽位租约。
+
+    🔴 三种结果必须分开处理 —— 冷却时长差 6 倍（120s vs 20s）：
+        出口被封（B0000） → report_banned  长冷却，配额不会几秒就恢复
+        网络类失败        → report_failed  短冷却，偶发超时很正常
+        正常/主动中止     → release        立刻还回去
+    混成一种的后果：要么把健康出口按长冷却晾 2 分钟（吞吐塌），
+    要么把被封出口当偶发故障 20s 后重投（继续撞墙）。
+
+    🔴 判据走 `error_kind_of()`，**不能**改成 `is_quota_block(rec.error)`：
+    我们自己拼的守卫文案里含 `B0000`（是引用，不是服务端返回），文本匹配会把
+    "一个请求都没发的主动中止"读成"服务端确认的封禁"，于是一个**干净出口**
+    被白晾 120s。`QuotaGovernor.note_result` 早就为此加过排除（见那里的注释），
+    这里是同一个坑的另一半 —— 用结构化字段从根上消掉：`ERR_QUOTA` 只在真的
+    拿到 `B0000` 响应时才写。
+
+    ⚠ 刻意放在**模块级**而不是 `run_batch` 里的闭包：闭包没法单独测，而这条
+    判据的等价性是靠差分测试证明的（`tests/test_quota_governor.py`）。
+    """
+    if pool is None or lease is None:
+        return
+    if error_kind_of(rec) == ERR_QUOTA:
+        pool.report_banned(lease, f"{QUOTA_MSG_CODE} @ {rec.email}")
+    elif ok:
+        pool.release(lease)
+    elif rec.status == "skipped":
+        # 主动中止：一个请求都没发，出口是干净的，别浪费一次冷却。
+        pool.release(lease)
+    else:
+        pool.report_failed(lease, rec.error[:80])
+
+
 def gen_username(prefix: str = "lz") -> str:
     return prefix + "".join(random.choices(string.digits, k=6))
 
@@ -137,6 +367,11 @@ class AccountRecord:
     credits: str = ""
     status: str = "init"
     error: str = ""
+    # 错误的**结构化类别**（取值见 ERR_* 常量）。空 = 没有错误。
+    # 🔴 为什么不直接看 `error` 文本：我们自己拼的守卫文案里也含 `B0000`，
+    #    文本匹配分不清"服务端返回的"和"我们引用的"。理由与取值见 ERR_* 那段。
+    # 读它请用 `error_kind_of()`，不要直接读字段 —— 那里有老记录的兜底。
+    error_kind: str = ""
     stages: dict = field(default_factory=dict)
     timings: dict = field(default_factory=dict)
     created_at: str = ""
@@ -218,10 +453,13 @@ def stage_register(mail: TempMailClient, sso: SSOClient, rec: AccountRecord,
         mark("register_call", t)
         if not reg.ok:
             detail = f"{reg.msg_code} {reg.msg}".strip()
+            # 打标而不是在这里处理：stage_register 是单账号函数，
+            # "停止整批"的决策属于 run_batch（它才看得到全局节奏）。
             if is_quota_block(detail):
-                # 打标而不是在这里处理：stage_register 是单账号函数，
-                # "停止整批"的决策属于 run_batch（它才看得到全局节奏）。
                 rec.stages["quota_blocked"] = QUOTA_MSG_CODE
+                rec.error_kind = ERR_QUOTA
+            else:
+                rec.error_kind = ERR_REJECTED
             raise RuntimeError(f"register failed: {detail}")
         rec.sso_uid = reg.sso_uid
         rec.stages["register"] = "ok"
@@ -232,6 +470,7 @@ def stage_register(mail: TempMailClient, sso: SSOClient, rec: AccountRecord,
         # 主动中止 ≠ 失败：一个请求都没发，不该混进失败统计里。
         rec.status = "skipped"
         rec.error = f"quota guard: {ex}"
+        rec.error_kind = ERR_QUOTA_GUARD
         rec.timings["register"] = round((time.time() - t0) * 1000)
         rec.timings["register_detail"] = sub
         log("跳过（配额保护）")
@@ -239,6 +478,10 @@ def stage_register(mail: TempMailClient, sso: SSOClient, rec: AccountRecord,
     except Exception as ex:
         rec.status = "failed"
         rec.error = f"register: {ex}"
+        # ⚠ `or` 不能省：上面 `if not reg.ok` 那条路已经在抛之前打好标了，
+        #    这里若无条件覆盖，`ERR_QUOTA` 会被冲成 `ERR_NETWORK`。
+        #    （它的异常类型是 `RuntimeError`，会被这个 `except Exception` 接到。）
+        rec.error_kind = rec.error_kind or ERR_NETWORK
         rec.timings["register"] = round((time.time() - t0) * 1000)
         rec.timings["register_detail"] = sub
         return False
@@ -258,6 +501,7 @@ def stage_register(mail: TempMailClient, sso: SSOClient, rec: AccountRecord,
             # 把"邮件没到"和"邮箱服务读不出来"分开报 —— 前者是等，后者是坏，
             # 修法完全不同（见 tempmail.wait_for_mail 的 5xx 说明）。
             why = getattr(mail, "last_error", "") or "activation mail not received within timeout"
+            rec.error_kind = ERR_REJECTED
             raise RuntimeError(why)
 
         # 🔬 把 `mail_wait` 拆成"邮件真正到达"与"轮询开销"两段。
@@ -270,10 +514,12 @@ def stage_register(mail: TempMailClient, sso: SSOClient, rec: AccountRecord,
 
         link = m.find_link("active", "activat", "verif", "confirm")
         if not link:
+            rec.error_kind = ERR_REJECTED
             raise RuntimeError("activation link not found in mail")
 
         t = time.time()
         if not sso.activate_from_url(link):
+            rec.error_kind = ERR_REJECTED
             raise RuntimeError("activate returned success=false")
         mark("activate_call", t)
         rec.stages["activate"] = "ok"
@@ -281,6 +527,9 @@ def stage_register(mail: TempMailClient, sso: SSOClient, rec: AccountRecord,
     except Exception as ex:
         rec.status = "failed"
         rec.error = f"activate: {ex}"
+        # 上面三处 `raise` 都是"服务端行为不符合预期"，已在抛出点打好标；
+        # 这里只兜底 `wait_for_mail` 自己抛的网络异常（`or` 不能省，理由同上）。
+        rec.error_kind = rec.error_kind or ERR_NETWORK
         rec.timings["register"] = round((time.time() - t0) * 1000)
         rec.timings["register_detail"] = sub
         return False
@@ -312,7 +561,7 @@ def stage_login_key(rec: AccountRecord, *, session=None, headless: bool = False,
                                 screenshot_prefix=screenshot_prefix,
                                 verbose=verbose)
         else:
-            from .browser_login import login as browser_login
+            from .browser import login as browser_login
 
             res = browser_login(rec.email, rec.password, headless=headless,
                                 screenshot_prefix=screenshot_prefix, verbose=verbose)
@@ -331,6 +580,7 @@ def stage_login_key(rec: AccountRecord, *, session=None, headless: bool = False,
     except Exception as ex:
         rec.status = "failed"
         rec.error = f"login: {ex}"
+        rec.error_kind = ERR_BROWSER
         rec.timings["login"] = round((time.time() - t0) * 1000)
         return False
 
@@ -382,6 +632,7 @@ def stage_login_key(rec: AccountRecord, *, session=None, headless: bool = False,
     except Exception as ex:
         rec.status = "failed"
         rec.error = f"key: {ex}"
+        rec.error_kind = ERR_BROWSER
         rec.timings["key"] = round((time.time() - t1) * 1000)
         return False
 
@@ -491,31 +742,15 @@ def run_batch(*, count: int, workers: int = 2, headless: bool = False,
               f"   每个注册 worker 独占一个出口 IP。"
               f"（{QUOTA_MSG_CODE} 只封那个出口，不再中断整批）", flush=True)
 
-    # ── 配额保护（开跑前）──────────────────────────────────────
+    # ── 配额守卫（三处决策都收在 QuotaGovernor 里）──────────────────
+    # 开跑前拦 + 拿租约前预筛 + 拿到租约后复查 + 运行中哨兵。
     # 🔴 为什么必须在**投递前**拦，而不是等失败再停：`B0000` 是累计量限制，
     #    撞上之后**连单账号都注册不了**，继续投递只是在加深封禁、并制造一堆
     #    假失败记录。宁可少跑几个，也不要撞墙。
-    #    详见 src/quota.py 的模块 docstring。
-    #
-    # 🔀 槽位模式下的分支：本地计数是**按出口 IP** 记的，而槽位池有多个出口。
-    #    这里的历史计数（scope 为空）属于老的单代理出口，拿它来拦槽位批次
-    #    会得到错误的结论（实测：53/40 "超额"，但 6 个新出口其实一个都没用过）。
-    #    所以槽位模式下**跳过全局守卫**，改由每个 producer 在拿到租约后
-    #    按自己的 scope 单独检查（见 producer 内 `_slot_quota_blocked`）。
-    if not ignore_quota and pool is None:
-        # allow_partial：还有余量就放行（下面自己裁计划量），余量为 0 才抛。
-        st = quota.check_or_raise(planned=count, allow_partial=True)
-        if st.used + count > st.limit:
-            keep = st.remaining
-            print(f"⚠ 本地配额保护：计划注册 {count} 个，但{st.describe()} "
-                  f"—— 本次只跑 {keep} 个。\n"
-                  f"  想全跑：调大 IR_REG_QUOTA_MAX，或加 --ignore-quota"
-                  f"（先确认服务端确实已恢复）。", flush=True)
-            count = keep
-    elif not ignore_quota and pool is not None:
-        print(f"ℹ 槽位模式：跳过全局配额守卫（本地计数 {quota.status().describe()} "
-              f"是**老出口**的，与新槽位无关）——\n"
-              f"  改按槽位分别计数，每个出口各自独立。", flush=True)
+    #    分模式的分叉理由见 `QuotaGovernor` 的类 docstring。
+    gov = QuotaGovernor(pool=pool, ignore=ignore_quota,
+                        log=lambda m: print(m, flush=True))
+    count = gov.allow(count)
 
     reg_conc = reg_concurrency or min(count, REG_CONCURRENCY)
     results: list = [None] * count
@@ -534,7 +769,7 @@ def run_batch(*, count: int, workers: int = 2, headless: bool = False,
 
     # ── 消费者：每个 worker 一个浏览器会话，复用进程 ──────────
     def consumer_worker(wid: int):
-        from .browser_login import BrowserSession
+        from .browser import BrowserSession
 
         try:
             with BrowserSession(headless=headless) as sess:
@@ -577,6 +812,7 @@ def run_batch(*, count: int, workers: int = 2, headless: bool = False,
                     _, rec = item
                     rec.status = "failed"
                     rec.error = f"browser worker failed: {str(ex)[:120]}"
+                    rec.error_kind = ERR_BROWSER
                 finally:
                     q.task_done()
 
@@ -589,62 +825,12 @@ def run_batch(*, count: int, workers: int = 2, headless: bool = False,
     # 注册速率由闸门钉死（register/byEmail 有写操作限流，见 REG_MIN_INTERVAL）
     reg_gate = _RateLimiter(REG_MIN_INTERVAL)
 
-    def _settle_lease(lease, ok: bool, rec: AccountRecord) -> None:
-        """按结果归还槽位。
-
-        🔴 三种结果必须分开处理 —— 冷却时长差 6 倍（120s vs 20s）：
-            出口被封（B0000） → report_banned  长冷却，配额不会几秒就恢复
-            网络类失败        → report_failed  短冷却，偶发超时很正常
-            正常/主动中止     → release        立刻还回去
-        混成一种的后果：要么把健康出口按长冷却晾 2 分钟（吞吐塌），
-        要么把被封出口当偶发故障 20s 后重投（继续撞墙）。
-        """
-        if pool is None or lease is None:
-            return
-        if is_quota_block(rec.error):
-            pool.report_banned(lease, f"{QUOTA_MSG_CODE} @ {rec.email}")
-        elif ok:
-            pool.release(lease)
-        elif rec.status == "skipped":
-            # 主动中止：一个请求都没发，出口是干净的，别浪费一次冷却。
-            pool.release(lease)
-        else:
-            pool.report_failed(lease, rec.error[:80])
-
     # 运行中配额保护（fail-fast）。
     # 开跑前的检查只能看到"历史累计"，看不到"本次跑着跑着就触顶"的情况
     # （本地上限是估计值，服务端真实阈值可能更低）。所以运行中还要有个哨兵：
-    # 连续见到 QUOTA_STREAK_STOP 个 B0000 就置位 quota_hit，后续 producer
-    # 直接跳过 —— 既不浪费请求，也不再加深封禁。
-    quota_hit = threading.Event()
-    _quota_lock = threading.Lock()
-    _quota_streak = [0]
-
-    def _note_register_result(ok: bool, rec: AccountRecord) -> None:
-        with _quota_lock:
-            if pool is not None:
-                # 🔀 槽位模式下 `B0000` 是**出口维度**的信号，不是"整批触顶"。
-                # 旧逻辑在这里会把整批后续任务标 skipped —— 而实测 3 个不同
-                # 出口都能注册成功，那样做等于**把还有余量的出口一起停掉**。
-                # 自我保护改由槽位冷却承担：被封的出口 120s 内不再分配；
-                # 若所有出口都被封，`acquire()` 会阻塞到超时，那些任务按失败
-                # 记账 —— 效果等价于"停下来"，但不会误伤干净的出口。
-                if ok:
-                    _quota_streak[0] = 0
-                return
-            if ok:
-                _quota_streak[0] = 0
-            elif rec.status == "skipped":
-                # 主动中止：没发请求，既不是配额证据也不是恢复证据。
-                # ⚠ 必须显式排除 —— 它的 error 文本里也含 B0000（是引用，
-                #   不是服务端返回），不排除就会被当成新证据重复计数。
-                pass
-            elif is_quota_block(rec.error):
-                _quota_streak[0] += 1
-                if _quota_streak[0] >= QUOTA_STREAK_STOP:
-                    quota_hit.set()
-            # 其他失败：不动计数。
-            # （若在这里清零，一个无关的失败就能把已确认的配额信号抹掉。）
+    # 连续见到 QUOTA_STREAK_STOP 个 B0000 就置位，后续 producer 直接跳过 ——
+    # 既不浪费请求，也不再加深封禁。
+    # 🔴 哨兵状态与判据都在 `gov` 里（`note_result()` 喂食、`hit()` 读）。
 
     def producer(idx: int):
         rec = AccountRecord(created_at=time.strftime("%Y-%m-%d %H:%M:%S"))
@@ -653,10 +839,11 @@ def run_batch(*, count: int, workers: int = 2, headless: bool = False,
         # 廉价预筛：挡住**尚未启动**的任务。真正的最后一道闸在 stage_register
         # 内部、限速闸门之后（见那里的注释）—— 因为本函数开头这次检查对
         # "并发窗口内已起飞"的任务无效。
-        if quota_hit.is_set():
+        if gov.hit():
             rec.status = "skipped"
             rec.error = (f"quota guard: 前序账号已触发 {QUOTA_MSG_CODE}，"
                          f"跳过投递（未发请求）")
+            rec.error_kind = ERR_QUOTA_GUARD
             log("跳过（配额保护）")
             q.put((idx, rec))
             return
@@ -667,33 +854,25 @@ def run_batch(*, count: int, workers: int = 2, headless: bool = False,
             if pool is not None:
                 # 独占一个出口 IP。全池都在冷却时阻塞等待，超时抛 TimeoutError。
                 #
-                # 🔴 accept 把"出口配额已满"的槽位**提前排除在候选之外**。
-                #    不加这一步的话，池子只会按"用得最少"均分租约，已满的
-                #    槽位会白白吃掉一大半 —— 实测 50 个任务只成 16 个，
-                #    而池子里明明还躺着 44 个额度没用（全在没被分到的槽位上）。
-                def _slot_has_quota(i: int) -> bool:
-                    try:
-                        return not quota.status(
-                            scope=config.slot_scope(pool.url_of(i))).exhausted
-                    except ValueError:
-                        # 端口没登记出口 IP：不敢用，否则配额会被静默记错地方。
-                        return False
-
+                # 🔴 `accept=gov.check_slot` 把"出口配额已满"的槽位**提前排除在
+                #    候选之外**（判据在 `QuotaGovernor.check_slot`，理由也写在那里）。
                 try:
                     lease = pool.acquire(timeout=config.IR_PROXY_SLOT_TIMEOUT,
-                                         accept=_slot_has_quota)
+                                         accept=gov.check_slot)
                 except NoEligibleSlot as ex:
                     # 有空闲槽位，但它们的出口配额全满了。
                     # 配额要几小时才滑出窗口 ⇒ 等下去毫无意义，直接记"跳过"。
                     rec.status = "skipped"
                     rec.error = (f"quota guard: 所有出口配额均已满"
                                  f"（{ex}），未发请求")
+                    rec.error_kind = ERR_QUOTA_GUARD
                     log(f"跳过（所有出口配额已满：{ex}）")
                     return
                 except TimeoutError as ex:
                     # 等不到槽位 ≠ 这个账号注册失败，但也绝不能假装成功。
                     rec.status = "failed"
                     rec.error = f"register: {ex}"
+                    rec.error_kind = ERR_NETWORK
                     log(f"⏳ 等不到空闲槽位（{pool.describe()}）")
                     return
                 # 🔴 scope 取**出口 IP**，不是槽位位置号 —— 位置号会随
@@ -703,35 +882,34 @@ def run_batch(*, count: int, workers: int = 2, headless: bool = False,
                 rec.proxy_slot = str(lease)
                 log(f"出口槽位 {lease}（配额记在 {scope} 名下）")
                 # 这个出口自己的配额（不是全局的 —— 见 quota.status 的说明）。
-                # 这里再查一遍：accept 是在**拿租约之前**判的，拿到租约到
-                # 这一行之间可能有别的线程把最后一点额度用掉了。
-                st = quota.status(scope=scope)
-                if st.exhausted:
+                # 复查的判据在 `QuotaGovernor.claim_slot`（理由也写在那里）。
+                why = gov.claim_slot(scope, log)
+                if why:
                     rec.status = "skipped"
-                    rec.error = (f"quota guard: 出口 {scope} 本地计数已满"
-                                 f"（{st.describe()}），未发请求")
-                    log(f"跳过（出口 {scope} 配额保护：{st.describe()}）")
+                    rec.error = why
+                    rec.error_kind = ERR_QUOTA_GUARD
                     return
             mail = TempMailClient()
             # 🔴 proxy 必须传**具体值**给这个 client，不能改全局 `IR_PROXY` ——
             #    多个 producer 同时改全局会互相踩（见 config.apply_proxy）。
             sso = SSOClient(proxy=(lease.url if lease else None))
             ok = stage_register(mail, sso, rec, mail_domain=mail_domain, log=log,
-                                gate=reg_gate, should_stop=quota_hit.is_set,
+                                gate=reg_gate, should_stop=gov.hit,
                                 quota_scope=scope)
         except Exception as ex:
             rec.status = "failed"
             rec.error = f"register: {ex}"
+            rec.error_kind = rec.error_kind or ERR_NETWORK
         finally:
-            _settle_lease(lease, ok, rec)
-            _note_register_result(ok, rec)
+            settle_lease(pool, lease, ok, rec)
+            gov.note_result(ok, rec)
             q.put((idx, rec))
 
     t_start = time.time()
     with ThreadPoolExecutor(max_workers=reg_conc) as ex:
         list(ex.map(producer, range(count)))
 
-    if quota_hit.is_set():
+    if gov.hit():
         skipped = sum(1 for r in results
                       if r is not None and r.status == "skipped")
         # 只有真跳过了才报 —— skipped==0 说明配额信号是在**最后几个任务

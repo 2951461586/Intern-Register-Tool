@@ -13,9 +13,8 @@
 可用清单见 `config.CHAT_MODELS`（也可用 `list_models()` 动态获取）。
 """
 
-from dataclasses import dataclass, field
-
 import time
+from dataclasses import dataclass, field
 
 import requests
 
