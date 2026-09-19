@@ -63,6 +63,13 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
+# 🔴 这行有两个副作用，两个都必须：把 `tools/` 与仓库根加进 `sys.path`，
+#    以及**加载 `.env`**（链：`_path` → `_bootstrap` → `import src.config`）。
+#    少了它，下面 `os.getenv("IR_WORKER_BASE")` 拿到空串，脚本会报
+#    "缺少 IR_WORKER_BASE / --base" —— 看起来像**没配**，实际是**没读**。
+#    实测踩过（2026-09-19），报错指向症状不指向原因。
+from _path import ROOT  # noqa: F401
+
 API = "https://api.cloudflare.com/client/v4"
 
 # ── 默认值：允许用环境变量覆盖，方便换账号/换库 ────────────────────────────

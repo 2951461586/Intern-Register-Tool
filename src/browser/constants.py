@@ -8,6 +8,16 @@
 
 ⚠ 这些常量在**导入时**由 `os.getenv` 定值。所以"运行时改环境变量"无效，
   想改行为必须在启动前设好环境变量。
+
+🔴 **`import src.config` 必须早于本模块被导入**，否则 `.env` 还没填进
+  `os.environ`，下面这些 `os.getenv` 会**静默**取默认值 —— 不报错、不告警，
+  只是配置不生效。当前 `.env` 没有配 `IR_MICRO_BUDGET` / `IR_NO_MICRO_MOVE` /
+  `IR_PREWARM_MS` / `IR_TYPE_DELAY_*`，所以尚无实际影响；**一旦往 `.env`
+  里加这些键，就必须确认导入顺序**。
+  （`src/` 内部模块不经过 `tools/_bootstrap.py` 的 `.env` 加载，所以这里
+  没有自动保护。生产路径 `src/pipeline.py` 第 44 行先 `from . import config`，
+  顺序是对的；单独 `import src.browser.constants` 则不会加载 `.env`。）
+
 ⚠ 因为各模块用 `from .constants import X` 绑定的是**副本**，patch 时若想生效，
   要打在**读它的那个模块**的命名空间上（见 tests/test_browser_login.py 的
   `test_default_chrome_args_come_from_the_reader_module`）。
