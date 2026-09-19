@@ -215,6 +215,75 @@ def proxy_slots() -> list[str]:
     return out
 
 
+# ── 槽位端口 -> 出口 IP（配额记账的维度）────────────────────────────
+# 🔴 配额必须按**出口 IP** 记，绝不能按槽位号（`slot1`/`slot2`）记。
+#
+#    为什么：目标站点是按 **IP** 封的，而 `slots.txt` 的条目顺序随时会变
+#    （加出口、删死掉的出口、调顺序）。用"位置号"当 scope 时，
+#    `slots.txt` 一改动，既有记录就**整体错配到别的 IP 头上** ——
+#    而且不报错、不抛异常，只是让某个 IP 偷偷超限、另一个被提前停掉。
+#
+#    本项目实测已经踩到过：`slots.txt` 从 4 项变 6 项又变 3 项的过程中，
+#    台账里出现了 3 条错配（某个 scope 混进了别的槽位的记录）。
+#    用出口 IP 当 scope 后，池子顺序怎么排都不影响记账。
+#
+# 🔴 这张表**不进仓库**（出口 IP 属于基础设施标识，公开可被搜索，
+#    节点容易被盯上）。放在 `.env` 里：
+#
+#        IR_SLOT_EGRESS_IPS=7901=10.0.0.1,7902=10.0.0.2
+#
+# 🔴 换订阅 / 换节点 / 换机房之后这张表就过期了，必须重测：
+#        python tools/probe_slots.py
+#    改完还要**同步迁移台账**（否则旧记录挂在旧 IP 名下）：
+#        python tools/migrate_quota_scope.py --apply
+IR_SLOT_EGRESS_IPS = os.getenv("IR_SLOT_EGRESS_IPS", "").strip()
+
+
+def _parse_slot_egress(raw: str) -> dict:
+    """把 `7901=1.2.3.4,7902=5.6.7.8` 解析成 `{端口: IP}`。
+
+    容忍换行分隔与空项；格式不对的项直接跳过（不抛），
+    因为缺项会在 `slot_scope()` 里被更明确地报出来。
+    """
+    out: dict = {}
+    for item in raw.replace("\n", ",").split(","):
+        item = item.strip()
+        if not item or item.startswith("#") or "=" not in item:
+            continue
+        port, _, ip = item.partition("=")
+        port, ip = port.strip(), ip.strip()
+        if port and ip:
+            out[port] = ip
+    return out
+
+
+SLOT_EGRESS_IPS: dict = _parse_slot_egress(IR_SLOT_EGRESS_IPS)
+
+
+def slot_scope(url: str) -> str:
+    """把槽位 URL 映射成**配额记账的 scope**（= 那个槽位的出口 IP）。
+
+    出口 IP 才是目标站点真正封的那个东西，也是唯一不随配置漂移的标识。
+    用位置号（`slot1`/`slot2`）当 scope 是错的 —— 见 `SLOT_EGRESS_IPS` 的说明。
+
+    🔴 端口不在映射表里时**大声报错，不退回位置号**：
+    静默错配会让某个 IP 悄悄超过上限（真被目标站封），
+    比"跑不起来、逼你去补映射"危险得多。
+    """
+    port = url.rsplit(":", 1)[-1].strip()
+    ip = SLOT_EGRESS_IPS.get(port)
+    if not ip:
+        raise ValueError(
+            f"槽位 {url} 的出口 IP 未知（端口 {port} 不在 SLOT_EGRESS_IPS 里）。\n"
+            f"  1) 先量出真实出口 IP： python tools/probe_slots.py\n"
+            f"  2) 写进 .env（**不要写进源码**，出口 IP 不进仓库）：\n"
+            f"       IR_SLOT_EGRESS_IPS={port}=<那个槽位的出口 IP>\n"
+            f"     多个槽位用逗号分隔：7901=1.1.1.1,7902=2.2.2.2\n"
+            f"  3) 迁移台账： python tools/migrate_quota_scope.py --apply\n"
+            f"  —— 不能退回按槽位号记账：那会静默把配额记到别的 IP 头上。")
+    return ip
+
+
 def proxies(raw: str = None) -> dict | None:
     """把代理串解析成 requests 的 `proxies` 字典；空则返回 `None`。
 

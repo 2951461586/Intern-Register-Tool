@@ -93,6 +93,29 @@ def exit_ip_only(slot: str, timeout: float) -> dict:
             "targets": {}}
 
 
+def _down_detail(r: dict) -> str:
+    """给"不通"的槽位拼一句**真正说明原因**的话。
+
+    坑：`probe()` 的 `note` 字段会在第 2 步被 geo 结论覆盖
+    （"⚠ 出口是机房 IP（信誉差，封禁风险高）"）。如果第 4 步目标站没通，
+    `note` 往往还是那条 geo 提示 —— 直接打印它等于**答非所问**，
+    会让人以为"是出口类型的问题"，实际上只是网络抖动或超时。
+    所以：先从 targets / controls 里找失败明细，找不到才退回 note。
+    """
+    parts = []
+    for k, v in (r.get("targets") or {}).items():
+        if not str(v).endswith("✓"):
+            parts.append(f"target:{k}={v}")
+    if not parts:
+        for k, v in (r.get("controls") or {}).items():
+            if "ACL" in str(v) or str(v).startswith("ERR"):
+                parts.append(f"control:{k}={v}")
+    if parts:
+        return "；".join(parts)
+    note = r.get("note") or ""
+    return note if note else "（无失败明细）"
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(
         description="探测槽位池的真实出口 IP 个数与目标站可达性")
@@ -132,7 +155,8 @@ def main() -> int:
                 r = pp.probe(slot, do_geo=not args.no_geo, timeout=args.timeout)
                 r = {"slot": slot, "egress_ip": r.get("egress_ip", ""),
                      "verdict": r.get("verdict", ""), "note": r.get("note", ""),
-                     "targets": r.get("targets", {})}
+                     "targets": r.get("targets", {}),
+                     "controls": r.get("controls", {})}
         except Exception as ex:                                    # noqa: BLE001
             r = {"slot": slot, "egress_ip": "", "verdict": "不通",
                  "note": f"{type(ex).__name__}: {ex}"[:120], "targets": {}}
@@ -176,7 +200,11 @@ def main() -> int:
             print(f"  ⛔ {r['slot']} 被 ACL 拦了目标域名 —— "
                   f"换出口 IP 也没用，得找服务商加白名单")
         for r in down:
-            print(f"  ✗ {r['slot']} 不通：{r['note'][:70]}")
+            # 别直接打 note —— note 可能存的是第 2 步的 geo 提示
+            # （"出口是机房 IP"这类），跟"为什么不通"完全无关，
+            # 会把人往错误方向带。优先报**真正的失败明细**。
+            detail = _down_detail(r)
+            print(f"  ✗ {r['slot']} 不通：{detail[:100]}")
 
         usable_ips = {r["egress_ip"] for r in ok if r["egress_ip"]}
         print(f"\n✅ 既拿得到出口 IP、又能到目标站的**不同出口**: {len(usable_ips)} 个")

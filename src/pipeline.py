@@ -44,7 +44,7 @@ from dataclasses import asdict, dataclass, field
 from . import config
 from . import quota
 from .discovery import DiscoveryClient
-from .proxypool import build_pool
+from .proxypool import NoEligibleSlot, build_pool
 from .sso import SSOClient
 from .tempmail import TempMailClient
 
@@ -666,18 +666,45 @@ def run_batch(*, count: int, workers: int = 2, headless: bool = False,
         try:
             if pool is not None:
                 # 独占一个出口 IP。全池都在冷却时阻塞等待，超时抛 TimeoutError。
+                #
+                # 🔴 accept 把"出口配额已满"的槽位**提前排除在候选之外**。
+                #    不加这一步的话，池子只会按"用得最少"均分租约，已满的
+                #    槽位会白白吃掉一大半 —— 实测 50 个任务只成 16 个，
+                #    而池子里明明还躺着 44 个额度没用（全在没被分到的槽位上）。
+                def _slot_has_quota(i: int) -> bool:
+                    try:
+                        return not quota.status(
+                            scope=config.slot_scope(pool.url_of(i))).exhausted
+                    except ValueError:
+                        # 端口没登记出口 IP：不敢用，否则配额会被静默记错地方。
+                        return False
+
                 try:
-                    lease = pool.acquire(timeout=config.IR_PROXY_SLOT_TIMEOUT)
+                    lease = pool.acquire(timeout=config.IR_PROXY_SLOT_TIMEOUT,
+                                         accept=_slot_has_quota)
+                except NoEligibleSlot as ex:
+                    # 有空闲槽位，但它们的出口配额全满了。
+                    # 配额要几小时才滑出窗口 ⇒ 等下去毫无意义，直接记"跳过"。
+                    rec.status = "skipped"
+                    rec.error = (f"quota guard: 所有出口配额均已满"
+                                 f"（{ex}），未发请求")
+                    log(f"跳过（所有出口配额已满：{ex}）")
+                    return
                 except TimeoutError as ex:
                     # 等不到槽位 ≠ 这个账号注册失败，但也绝不能假装成功。
                     rec.status = "failed"
                     rec.error = f"register: {ex}"
                     log(f"⏳ 等不到空闲槽位（{pool.describe()}）")
                     return
-                scope = f"slot{lease.slot}"
+                # 🔴 scope 取**出口 IP**，不是槽位位置号 —— 位置号会随
+                #    `slots.txt` 增删条目整体错位，把配额记到别的 IP 头上
+                #    （本项目实测已发生过，见 config.SLOT_EGRESS_IPS 的说明）。
+                scope = config.slot_scope(lease.url)
                 rec.proxy_slot = str(lease)
-                log(f"出口槽位 {lease}")
+                log(f"出口槽位 {lease}（配额记在 {scope} 名下）")
                 # 这个出口自己的配额（不是全局的 —— 见 quota.status 的说明）。
+                # 这里再查一遍：accept 是在**拿租约之前**判的，拿到租约到
+                # 这一行之间可能有别的线程把最后一点额度用掉了。
                 st = quota.status(scope=scope)
                 if st.exhausted:
                     rec.status = "skipped"

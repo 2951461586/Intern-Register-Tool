@@ -85,12 +85,35 @@ def main():
     slots = config.proxy_slots()
     qs = quota.status()
     if slots:
-        # 🔀 槽位模式下这个全局数字**属于老出口**（换槽位之前那个 IP），
-        #    对新出口没有参考价值 —— 真正生效的是每个槽位各自的计数。
+        # 🔀 槽位模式下全局数字**没有参考价值** —— 它是池化之前那个出口的
+        #    计数，而真正拦人的是每个出口 IP 各自的计数。所以这里必须
+        #    按出口逐个打印，否则人会照着一个假的数字判断"还能跑多少"。
         print(f"🔀 槽位池：{len(slots)} 个槽位已配置"
-              f"（{config.IR_PROXY_SLOTS_FILE or 'IR_PROXY_SLOTS'}）\n"
-              f"   全局本地配额 {qs.describe()} —— ⚠ 这是**老出口**的计数，"
-              f"槽位模式下按出口分别计，不拿它拦人。", flush=True)
+              f"（{config.IR_PROXY_SLOTS_FILE or 'IR_PROXY_SLOTS'}）", flush=True)
+        total_left = 0
+        try:
+            for i, url in enumerate(slots, 1):
+                ip = config.slot_scope(url)
+                st = quota.status(scope=ip)
+                left = max(0, config.REG_QUOTA_MAX - st.used)
+                total_left += left
+                mark = "已满" if st.exhausted else f"余 {left}"
+                print(f"     slot{i} {url:<26} 出口 {ip:<16} "
+                      f"{st.used:>2}/{config.REG_QUOTA_MAX}  {mark}", flush=True)
+        except ValueError as ex:
+            print(f"\n✗ 槽位出口 IP 未登记，拒绝开跑：\n  {ex}", file=sys.stderr)
+            return 1
+        print(f"   ── 合计可用额度 {total_left} 个"
+              f"（全局计数 {qs.describe()} —— 那是**老出口**的，别拿它判断）",
+              flush=True)
+        if total_left == 0:
+            print("   ⚠ 所有出口额度都已用尽，这一批会全部被跳过（未发请求）。\n"
+                  "     等窗口滑出，或加 --ignore-quota（有被目标站封 IP 的风险）。",
+                  flush=True)
+        elif total_left < args.count:
+            print(f"   ⚠ 可用额度 {total_left} < 计划 {args.count}，"
+                  f"会有约 {args.count - total_left} 个被跳过（未发请求）。",
+                  flush=True)
     else:
         print(f"本地配额：{qs.describe()}  "
               f"[state: {quota.state_path()}]", flush=True)
@@ -151,15 +174,39 @@ def main():
         print(f"      {len(skipped)} 个被配额保护跳过（未发请求，非失败）")
 
     # 耗时明细：注册 / 登录 / 建Key 三段，定位瓶颈用
+    # 🔴 「合计」= 注册+登录+建Key，是**单账号端到端**耗时，必须自己算。
+    #    别去读 `timings['total']` —— 那个键**根本不存在**，
+    #    于是老代码 `tm.get('total') or tm.get('batch_total')` 会静默退化成
+    #    `batch_total`（批次墙钟），导致这一列**每行都是同一个数**，
+    #    看起来像"所有账号耗时一样"，其实是显示 bug（实测 510.0 刷满 39 行）。
+    #    批次墙钟是**批次级**指标，跟单账号耗时不是一个东西，不能混进这一列。
     print(f"\n耗时明细（秒）：")
     print(f"  {'email':40s} {'注册':>7s} {'登录':>7s} {'建Key':>7s} {'合计':>7s}")
+    totals: list[float] = []
     for r in results:
         tm = r.timings or {}
+        stages = [tm.get(k) for k in ("register", "login", "key")]
+        # 三段齐了才算"端到端合计"；缺段（失败/跳过）给 "-"，
+        # 否则会把半截耗时和完整耗时放在一列里比，是误导。
+        if all(isinstance(v, (int, float)) for v in stages):
+            total_ms = sum(stages)
+            totals.append(total_ms / 1000)
+            total_s = f"{total_ms / 1000:.1f}"
+        else:
+            total_s = "-"
         print(f"  {(r.email or '(未建邮箱)'):40s} "
               f"{_fmt_ms(tm.get('register')):>7s} "
               f"{_fmt_ms(tm.get('login')):>7s} "
               f"{_fmt_ms(tm.get('key')):>7s} "
-              f"{_fmt_ms(tm.get('total') or tm.get('batch_total')):>7s}")
+              f"{total_s:>7s}")
+    if totals:
+        import statistics as _st
+        print(f"  {'── 统计（%d 个完整样本）' % len(totals):40s} "
+              f"{'':>7s} {'':>7s} {'':>7s} "
+              f"{_st.mean(totals):>7.1f}")
+        print(f"  {'   均值 / 中位 / 最快 / 最慢':40s} "
+              f"{'':>7s} {'':>7s} {'':>7s} "
+              f"{_st.median(totals):>7.1f} / {min(totals):.1f} / {max(totals):.1f}")
 
     # 登录内部阶段。
     # 🔴 看**最慢**的那个，不是第一个 —— 批量吞吐由关键路径（最慢账号）决定，

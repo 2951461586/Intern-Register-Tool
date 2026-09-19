@@ -23,7 +23,9 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from src import config  # noqa: E402
-from src.proxypool import ProxySlotPool, build_pool  # noqa: E402
+from src.proxypool import (  # noqa: E402
+    NoEligibleSlot, ProxySlotPool, build_pool,
+)
 
 PASS, FAIL = [], []
 
@@ -197,6 +199,55 @@ def main() -> int:
     check("describe 含槽位数", "4 个槽位" in txt, txt)
     check("describe 不声称出口 IP 个数",
           "出口 IP" not in txt and "出口数" not in txt, txt)
+
+    # ── 13. accept 过滤器：跳过"不该用"的槽位 ───────────────────
+    #     本项目用它跳过"出口 IP 配额已满"的槽位。不加的话池子会按
+    #     "用得最少"均分，已满的槽位白吃一大半租约。
+    print("\n[13] accept 过滤器")
+    p7 = ProxySlotPool(slots, cooldown=120)
+    # 只有 slot4 合格
+    only4 = lambda i: i == 4                                  # noqa: E731
+    got = []
+    for _ in range(3):
+        lz = p7.acquire(timeout=1, accept=only4)
+        got.append(lz.slot)
+        p7.release(lz)                       # 用完必须归还，否则第二次就等不到了
+    check("accept 只放行合格槽位", set(got) == {4}, str(got))
+
+    # 🔴 关键回归：合格槽位被占用时**必须等待**，不能判成"全都不合格"。
+    #    这是本项目实际踩过的坑 —— 第一版把放弃条件写成"当前空闲的
+    #    里面没有合格的"，结果注册高峰期 50 个任务只有头 3 个真跑了：
+    #    那一刻 3 个槽位正被占用，唯一空闲的 slot1 恰好是配额满的。
+    p8 = ProxySlotPool(slots, cooldown=120)
+    held = p8.acquire(timeout=1, accept=only4)      # 先占住唯一合格的 slot4
+    try:
+        p8.acquire(timeout=0.3, accept=only4)       # 现在没有空闲的合格槽位了
+        check("唯一合格槽位被占用时应超时等待（不是 NoEligibleSlot）",
+              False, "居然拿到了？")
+    except NoEligibleSlot as ex:
+        check("唯一合格槽位被占用时应超时等待（不是 NoEligibleSlot）",
+              False, f"误判成 NoEligibleSlot：{ex}")
+    except TimeoutError:
+        check("唯一合格槽位被占用时应超时等待（不是 NoEligibleSlot）", True)
+    finally:
+        p8.release(held)
+
+    # 池子里一个合格的都没有 → 立刻抛 NoEligibleSlot（不空等 timeout）
+    p9 = ProxySlotPool(slots, cooldown=120)
+    t0 = time.monotonic()
+    try:
+        p9.acquire(timeout=30, accept=lambda i: False)
+        check("全都不合格 → 立刻 NoEligibleSlot", False, "没抛异常")
+    except NoEligibleSlot:
+        dt = time.monotonic() - t0
+        check("全都不合格 → 立刻 NoEligibleSlot", dt < 1.0,
+              f"耗时 {dt:.2f}s（应远小于 timeout=30s）")
+
+    # accept 为空时行为与老版本完全一致（不能改变未使用该特性的调用方）
+    p10 = ProxySlotPool(slots, cooldown=120)
+    got10 = {p10.acquire(timeout=1).slot for _ in range(4)}
+    check("accept=None 时行为不变（4 个槽位都能拿到）",
+          got10 == {1, 2, 3, 4}, str(sorted(got10)))
 
     print(f"\n{'=' * 60}")
     print(f"通过 {len(PASS)} / {len(PASS) + len(FAIL)}")
