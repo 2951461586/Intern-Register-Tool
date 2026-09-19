@@ -60,7 +60,7 @@ python run.py --count 4 --workers 2 --headless
 python tools/ops/proxypool_ctl.py stop   # 用完停掉
 
 # 8. 改代码前后（质量门）
-python -m pytest -q                      # 行为测试（stdlib + pytest，零第三方）
+python -m pytest                         # 行为测试（⚠ 别加 -q，见 tests/ 一节）
 python -m ruff check .                   # 静态检查（配置在 pyproject.toml）
 python tools/gates/check_leaks.py        # 提交前：泄漏闸门
 python tools/gates/selftest_check_leaks.py   # 验证闸门**真的会拦**（变异测试，只用 stdlib）
@@ -228,9 +228,19 @@ tests/                 pytest 行为测试 —— 断言从已移除的 `tools/s
                            这样"旧路径还能用"的错觉会立刻变成 ImportError 而不是静默失效
   test_redact.py       脱敏边界（userinfo / 空串 / 密码含 @ / keep 语义）
 
-  跑法：`python -m pytest -q`。CI 就只跑这个 + ruff（见 .github/workflows/ci.yml）。
-  🔴 测试链上**零第三方依赖**（只有 stdlib + pytest）—— 不需要
-     requests / cryptography / playwright，所以 CI 不用装运行依赖。
+  跑法：`python -m pytest`。CI 就只跑这个 + ruff（见 .github/workflows/ci.yml）。
+  🔴 **不要加 `-q`**：`pyproject.toml` 的 `addopts` 已经有一个 `-q`，命令行再写一个
+     会叠成 `-qq`，把汇总行（`239 passed in 5.39s`）吞掉 —— 日志里只剩一串点。
+     要调详细程度请改 `addopts`（一处生效）。
+  🔴 测试链的第三方依赖是 **`requests` + `cryptography`**，不是"零依赖"：
+     `test_error_kind.py` → `src/pipeline.py` → `src/discovery.py` 要 requests；
+     → `src/sso.py` → `src/crypto_rsa.py` 要 cryptography。CI 的 test job 必须装。
+     ⚠ `playwright` **不在**收集路径上（`src/browser/session.py` 里是函数体内的
+       延迟 import），CI 刻意不装 —— 这个边界要留住。
+     这条假设已由 `test_dependency_surface.py` 钉成**可执行断言**（`ALLOWED`）：
+     测试链上一旦多出新的第三方包，本地跑测试就红，不用等 CI。
+     （2026-09-19 教训：这里原来写"零第三方依赖、CI 不用装运行依赖"，
+       该错误假设让 CI 连续红了 3 次 —— 本地全绿只因为本地装过。）
   ⚠ 2026-09-19：原 `tools/selftests/*.py`（手搓断言框架，910 行）已移除 ——
      它是 tests/ 的**重复实现**。删除前提是"迁移保真"已被变异验证证明
      （改一处源码 → 新旧两套同时变红，漏测 0），见 docs/refactor-plan-2026-09-19.md §5.2。
