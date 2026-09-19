@@ -282,6 +282,7 @@ tools/                 脚本按职责分 4 个子目录。**不是 Python 包**
     restore_results.py       从散落来源重建台账（合并规则用 `ledger.merge_fragments`）
     recover_activation.py    **补激活**：救回"注册成功但激活失败"的账号
     migrate_quota_scope.py   把老台账的配额计数迁到按出口 IP 记账
+    prune_ledger.py          剪掉台账里**没有账号信息**的空记录（配额守卫中止的残渣）
 ```
 
 > **怎么跑**：一律**从项目根**执行，例如 `python tools/probes/probe_429.py`。
