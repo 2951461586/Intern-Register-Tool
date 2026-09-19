@@ -44,12 +44,32 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
 
-      # 🔴 测试链上**零第三方依赖**：只有 stdlib + pytest。
-      #    `requests` / `cryptography` / `playwright` 都不在 import 路径上
-      #    （可用 `python -c "import tests..."` 复核）。这是刻意的 ——
-      #    项目承诺"clone 下来就能跑"，测试不该要求先装一堆东西。
-      - name: 安装 pytest
-        run: pip install pytest
+      # 🔴 这里曾经只装 `pytest`，注释还写着"测试链上零第三方依赖" ——
+      #    **那是错的假设，而且它把 CI 连续红了 3 次**（本地全绿，因为本地装过）。
+      #
+      #    实测依赖链（`python .workbuddy-ai/tmp/scan_test_deps.py`）：
+      #      tests/test_error_kind.py  → from src import pipeline
+      #        → src/pipeline.py:45    → from .discovery import DiscoveryClient
+      #          → src/discovery.py:37 → import requests        ← 缺
+      #        → src/sso.py            → src/crypto_rsa
+      #          → cryptography.hazmat.primitives               ← 缺
+      #
+      #    `playwright` **确实**不在收集路径上（`src/browser/session.py` 里是
+      #    函数体内的延迟 import），所以不装 —— 这一半的原假设是对的。
+      #
+      #    ⚠ 不要图省事写成 `pip install -r requirements.txt`：那会把 playwright
+      #      也拉进来。测试**真的**不需要它，这个边界要留住。
+      #      但"哪些是必需的"不能再靠注释里的假设 —— 见
+      #      `tests/test_dependency_surface.py`，它把这条假设变成了**可执行断言**：
+      #      测试链上一旦多出新的第三方包，本地跑测试就会红，不用等 CI。
+      #
+      #    版本范围与 `pyproject.toml` 的 `dependencies` / `dev` 保持一致。
+      #    🔴 这份清单有**三处**必须同步，改一处就要改全：
+      #        1. 这里
+      #        2. `tests/test_dependency_surface.py` 的 `ALLOWED`
+      #        3. `pyproject.toml` 的 `dependencies` / `optional-dependencies.dev`
+      - name: 安装测试依赖
+        run: pip install "pytest>=8" "requests>=2.31" "cryptography>=42.0"
 
       - name: pytest
         run: python -m pytest -q
