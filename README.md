@@ -9,6 +9,39 @@ OpenXLab（上海人工智能实验室）账号自动注册 + API Key 提取工�
 实测：单账号 **~35s**（顺序）；批量 **10.2s / 账号**（`--workers 2`）、
 **2.4s / 账号**（`--workers 12`，只测登录阶段，见「workers 的边界」）。
 
+## 安全约定（先读这一节）
+
+本仓库是**公开**的，而它处理的东西天然带敏感标识（出口 IP、代理账密、
+Worker 子域、临时邮箱域名）。所以有三条硬约定，完整版见
+**[`docs/security-conventions.md`](docs/security-conventions.md)**：
+
+1. **凭据只进 `.env`，永不进代码 / 文档 / 历史。**
+   代码里读 `os.getenv()` 且**默认空**，缺项由 `config.validate()` 在入口报错。
+2. **风控标识按家族占位化**，不写真实值：
+
+   | 类别 | 占位符写法 |
+   |---|---|
+   | 出口 IP / 主机 IP | `203.0.113.x`（RFC 5737 保留段） |
+   | Worker 子域 | `https://<worker-name>.<your-subdomain>.workers.dev` |
+   | 邮箱域名 | `<your-mail-domain>` |
+   | 代理账密 | `<USERNAME>:<PASSWORD>` |
+   | 本机绝对路径 | `<你的 mihomo 可执行文件>` |
+   | 代理服务商 / 订阅名 | `<订阅名>` |
+
+3. **提交前过闸门。** 一条命令，命中即非 0 退出：
+
+   ```bash
+   python tools/install_hooks.py     # 一次性：挂上 pre-commit 钩子
+   python tools/check_leaks.py       # 手动全量扫描（默认扫全部历史）
+   python tools/selftest_check_leaks.py   # 验证闸门**真的会拦**（变异测试）
+   ```
+
+   `.gitignore`（路径层）与 `check_leaks.py`（内容层）是**两层**，
+   改了一层必须同步另一层 —— 否则会漂移成"一个放行一个拦截"。
+
+> ⚠️ `run.py` 的槽位预检表**会**打印出口 IP（那是它的用途：按出口看额度）。
+> 这段输出**不要粘进任何仓库、issue 或对话**。
+
 ## 快速开始
 
 ```bash
@@ -34,7 +67,7 @@ python run.py --shot debug
 
 # 7. 规模化：起槽位代理池 —— 一次注册多个账号、每个走不同出口 IP
 #    （本机出口 IP 已被注册封禁时必须走这条，见「槽位代理池」一节）
-python tools/gen_mihomo_slots.py --sub 三毛机场 --slots 6 --filter 美国
+python tools/gen_mihomo_slots.py --sub <订阅名> --slots 6 --filter 美国
 python tools/proxypool_ctl.py start  # 起独立 mihomo 实例（status/stop 同源）
 python tools/probe_slots.py          # 先量出真实出口 IP 个数 = 并发上限
 echo 'IR_PROXY_SLOTS_FILE=.workbuddy-ai/proxypool/slots.txt' >> .env
@@ -479,13 +512,13 @@ run.py ──> run_batch ──> build_pool() ──acquire()──> worker 独�
 
 ```bash
 # 1) 生成槽位配置（顺带写出 slots.txt）
-python tools/gen_mihomo_slots.py --sub 三毛机场 --slots 6 --filter 美国
+python tools/gen_mihomo_slots.py --sub <订阅名> --slots 6 --filter 美国
 
 # 2) 起**独立** mihomo 实例（别动 Clash Verge —— 它把 TCP 控制器关了，
 #    而且改它的配置会影响你正常上网）
 python tools/proxypool_ctl.py start        # 推荐：带身份校验 + 端口复查
 # 等价于手写：
-#   "F:/IDE/Clash Verge/verge-mihomo.exe" \
+#   "<你的 mihomo 可执行文件>" \
 #       -d .workbuddy-ai/proxypool -f .workbuddy-ai/proxypool/config.yaml
 
 # 3) **先探测再跑**（必做，见下）

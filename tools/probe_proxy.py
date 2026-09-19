@@ -40,6 +40,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from src import config  # noqa: E402  （脱敏助手；必须在 sys.path 调整之后）
+
 # 探测"出口 IP"用的站点（必须能回显请求方 IP）
 ECHO_URL = "https://api.ipify.org?format=json"
 
@@ -190,6 +192,10 @@ def main() -> int:
     ap.add_argument("--timeout", type=float, default=20.0)
     ap.add_argument("--workers", type=int, default=4)
     ap.add_argument("--out", default="", help="把结果写成 JSON")
+    ap.add_argument(
+        "--no-redact", action="store_true",
+        help="⚠ 落盘时**保留**完整代理串（含账密）。只在纯本地留档时用；"
+             "默认会隐去 userinfo，避免报告被贴出去时带走凭据。")
     args = ap.parse_args()
 
     raws = list(args.proxies)
@@ -215,7 +221,9 @@ def main() -> int:
         loc = (f"{g.get('country','?')}/{g.get('regionName','?')}/{g.get('city','?')} "
                f"{g.get('isp','?')}") if g else "（未查）"
         print("=" * 78)
-        print(f"代理   : {r['proxy']}")
+        # 🔴 这里必须脱敏：`r['proxy']` 是 `host:port:user:pass`，
+        #    原样打印会把**代理账密**写进终端 / 重定向的日志文件。
+        print(f"代理   : {config.redact_url(r['url'])}")
         print(f"判定   : {r['verdict']}")
         print(f"出口 IP: {r['egress_ip'] or '—'}   {loc}")
         if r["note"]:
@@ -234,16 +242,29 @@ def main() -> int:
         print("→ 被拦截的代理**换出口 IP 也没用**：黑名单在服务商侧，"
               "要找服务商把目标域名加白名单，或换一家。")
     if ok:
-        print("→ 可用的可以直接设：")
+        # 🔴 不打印完整代理串（含账密）。要配到 .env 里，
+        #    值就在你自己手上 —— 别让凭据经过终端 / 日志 / 对话。
+        print("→ 可用的代理（**账密已隐去**，请从你自己的来源复制完整串）：")
         for r in ok:
-            print(f"     IR_PROXY={r['proxy']}")
+            print(f"     代理 {config.redact_url(r['url'])}   →  IR_PROXY=<完整串>")
 
     if args.out:
+        # 默认脱敏：报告经常被贴进 issue / 对话，凭据不该跟着走。
+        if args.no_redact:
+            payload = results
+        else:
+            payload = [
+                {**r, "proxy": config.redact_url(r.get("url", r.get("proxy", ""))),
+                 "url": config.redact_url(r.get("url", ""))}
+                for r in results
+            ]
         Path(args.out).write_text(
             json.dumps({"probed_at": time.strftime("%Y-%m-%d %H:%M:%S"),
-                        "results": results}, ensure_ascii=False, indent=2),
+                        "redacted": not args.no_redact,
+                        "results": payload}, ensure_ascii=False, indent=2),
             encoding="utf-8")
-        print(f"\n结果已落盘 {args.out}")
+        print(f"\n结果已落盘 {args.out}"
+              + ("" if args.no_redact else "（账密已隐去；需要原串用 --no-redact）"))
     return 0 if ok else 1
 
 

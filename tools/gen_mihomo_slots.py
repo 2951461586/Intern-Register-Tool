@@ -50,16 +50,16 @@ N 个 worker 各拿一个端口 → **N 个不同的出口 IP**。
 
 用法：
     # 先看订阅里有哪些节点（不发任何注册请求）
-    python tools/gen_mihomo_slots.py --sub Basic-912138 --list-nodes
+    python tools/gen_mihomo_slots.py --sub <订阅名> --list-nodes
 
     # 生成 8 个槽位（每个槽位一个不同节点）
-    python tools/gen_mihomo_slots.py --sub Basic-912138 --slots 8
+    python tools/gen_mihomo_slots.py --sub <订阅名> --slots 8
 
     # 只挑美国节点
-    python tools/gen_mihomo_slots.py --sub glados --slots 12 --filter "(?i)美国|United States|US"
+    python tools/gen_mihomo_slots.py --sub <订阅名> --slots 12 --filter "(?i)美国|United States|US"
 
 生成的配置用这条命令启动（**不是** Clash Verge）：
-    "F:/IDE/Clash Verge/verge-mihomo.exe" -d .workbuddy-ai/proxypool \
+    "<你的 mihomo 可执行文件>" -d .workbuddy-ai/proxypool \
         -f .workbuddy-ai/proxypool/config.yaml
 """
 
@@ -134,7 +134,7 @@ def parse_nodes(text: str) -> list[dict]:
     """从订阅正文里取 `proxies:` 列表。
 
     🔴 订阅有两种常见形态，都要认：
-      1. 标准 Clash YAML（有 `proxies:` 键）—— 三毛机场 / glados / 104G 都是这种
+      1. 标准 Clash YAML（有 `proxies:` 键）—— 主流机场基本都是这种
       2. **Base64 编码的 URI 列表**（`vless://` / `hysteria2://` …）—— 见
          `decode_uri_subscription()`。只认第一种会在某些订阅上"解析出 0 个节点"，
          而报错信息看起来像订阅坏了。
@@ -163,8 +163,9 @@ def parse_nodes(text: str) -> list[dict]:
 
 # ── Base64 URI 订阅 → mihomo 节点 ───────────────────────────────
 # 🔴 为什么值得写：机场给的订阅**不一定**是 Clash 格式。实测本机 8 个订阅里
-#    有 1 个（Basic-912138）给的是 base64(vless://.../hysteria2://.../tuic://...)，
+#    有 1 个给的是 base64(vless://.../hysteria2://.../tuic://...)，
 #    而另外 3 个是 Clash YAML。只支持一种就会"换一个订阅就解析出 0 个节点"。
+#    （订阅名不写进注释：服务商 + 套餐号属于能定位到你身份的标识。）
 _URI_SUPPORT = ("vless", "vmess", "trojan", "ss", "hysteria2", "hy2", "tuic")
 
 
@@ -481,7 +482,9 @@ def main() -> int:
     print(f"把这个写进 .env（{n_slots} 个槽位，共 {len(slots_value)} 字符）：")
     print(f"\nIR_PROXY_SLOTS={slots_value}\n")
     print(f"启动独立实例（**不是** Clash Verge）：")
-    print(f'  "F:/IDE/Clash Verge/verge-mihomo.exe" -d {DEFAULT_DIR.relative_to(ROOT)}'
+    # 🔴 不写真实本机路径 —— 绝对路径会暴露目录结构 / 项目代号，
+    #    属于"基础设施标识"（见 docs/security-conventions.md）。
+    print(f'  "<你的 mihomo 可执行文件>" -d {DEFAULT_DIR.relative_to(ROOT)}'
           f' -f {Path(args.out).relative_to(ROOT)}')
     print(f"验证槽位出口 IP：python tools/probe_slots.py")
     print("=" * 72)

@@ -98,7 +98,12 @@ def main():
                 left = max(0, config.REG_QUOTA_MAX - st.used)
                 total_left += left
                 mark = "已满" if st.exhausted else f"余 {left}"
-                print(f"     slot{i} {url:<26} 出口 {ip:<16} "
+                # 🔴 url 过一遍脱敏：槽位串可能是 `http://user:pass@host:port`，
+                #    原样打印会把账密写进终端 / 重定向的日志。
+                #    ⚠ 出口 IP 是**故意**打印的 —— 这张表的用途就是按出口看额度；
+                #    但正因如此，**这段输出不要粘进任何仓库 / issue**（见
+                #    docs/security-conventions.md「终端输出」一节）。
+                print(f"     slot{i} {config.redact_url(url):<26} 出口 {ip:<16} "
                       f"{st.used:>2}/{config.REG_QUOTA_MAX}  {mark}", flush=True)
         except ValueError as ex:
             print(f"\n✗ 槽位出口 IP 未登记，拒绝开跑：\n  {ex}", file=sys.stderr)

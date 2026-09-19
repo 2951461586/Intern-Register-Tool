@@ -10,8 +10,8 @@
     11156  127.0.0.1:7901-7906, 17901/17902   ← 本项目的槽位实例
     35588  127.0.0.1:7911-7913, 17911/17912   ← 本项目的对照实验实例
 
-**它们的可执行文件路径完全一样**（都是 `F:\\IDE\\Clash Verge\\verge-mihomo.exe`），
-进程名也一样。所以"按进程名 kill"是必错的做法 —— 杀到主内核就直接断网。
+**它们的可执行文件路径完全一样**（同一个 `mihomo` 二进制），进程名也一样。
+所以"按进程名 kill"是必错的做法 —— 杀到主内核就直接断网。
 
 唯一可靠的区分方式是**看它监听哪些端口**：
 
@@ -34,6 +34,7 @@
 import argparse
 import ctypes
 import ctypes.wintypes as w
+import os
 import re
 import subprocess
 import sys
@@ -52,7 +53,14 @@ CLASH_VERGE_PORTS = {7897, 1053}
 # Clash Verge 自己的进程（不是 mihomo 内核，但同样不能碰）
 NEVER_TOUCH_NAMES = {"clash-verge.exe", "clash-verge-service.exe", "clash-verge-rev.exe"}
 
-MHOMO_EXE = Path("F:/IDE/Clash Verge/verge-mihomo.exe")
+# 🔴 mihomo 内核路径：**不写死**（2026-09-19 安全重构前是一个硬编码的绝对路径）。
+#    两个理由：
+#      1. 绝对路径会暴露本机目录结构 / 项目代号 —— 属于基础设施标识，
+#         与出口 IP 同级，不进仓库（见 docs/security-conventions.md）。
+#      2. 每个人装的地方都不一样，写死等于把"能跑"绑死在一台机器上。
+#    从环境变量读；没配时在 `cmd_start()` 里报错并给出修法。
+#    （顺手修掉原常量的拼写：`MIHOMO_EXE` 少了一个 I。）
+MIHOMO_EXE = Path(os.getenv("IR_MIHOMO_EXE", "").strip())
 
 PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
 PROCESS_TERMINATE = 0x0001
@@ -250,8 +258,18 @@ def cmd_stop(force_all: bool = False) -> int:
 
 
 def cmd_start(config: Path, workdir: Path, wait: float = 6.0) -> int:
-    if not MHOMO_EXE.is_file():
-        print(f"✗ 找不到内核：{MHOMO_EXE}", file=sys.stderr)
+    if not str(MIHOMO_EXE) or not MIHOMO_EXE.is_file():
+        # 未配置与配错要分开报 —— 否则人会去翻"文件是不是被删了"。
+        if not str(MIHOMO_EXE):
+            print("✗ 未配置 mihomo 内核路径（IR_MIHOMO_EXE）。\n"
+                  "  这个值**故意不写死在源码里**（绝对路径会暴露本机目录结构，\n"
+                  "  而且每个人装的位置不同）。请在 .env 里加一行：\n"
+                  '    IR_MIHOMO_EXE=<你的 mihomo 可执行文件绝对路径>\n'
+                  "  Clash Verge 用户通常在它的安装目录下，文件名形如 "
+                  "`verge-mihomo.exe`。", file=sys.stderr)
+        else:
+            print(f"✗ 找不到内核：{MIHOMO_EXE}\n"
+                  f"  路径来自 IR_MIHOMO_EXE，检查一下是不是写错了。", file=sys.stderr)
         return 1
     if not config.is_file():
         print(f"✗ 找不到配置：{config}\n"
@@ -269,7 +287,7 @@ def cmd_start(config: Path, workdir: Path, wait: float = 6.0) -> int:
 
     DETACHED_PROCESS = 0x00000008
     CREATE_NEW_PROCESS_GROUP = 0x00000200
-    cmd = [str(MHOMO_EXE), "-d", str(workdir), "-f", str(config)]
+    cmd = [str(MIHOMO_EXE), "-d", str(workdir), "-f", str(config)]
     print(f"启动: {' '.join(cmd)}")
     # 🔴 必须 detached —— 否则进程会随这个 shell 一起被回收（踩过）。
     p = subprocess.Popen(cmd, creationflags=DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP,
@@ -281,7 +299,7 @@ def cmd_start(config: Path, workdir: Path, wait: float = 6.0) -> int:
     ports = listening_ports(p.pid, force=True)
     if not ports:
         print(f"✗ PID {p.pid} 没有监听任何端口 —— 起来就退出了？"
-              f"\n  手动跑一次看报错：{MHOMO_EXE} -d {workdir} -f {config}", file=sys.stderr)
+              f"\n  手动跑一次看报错：{MIHOMO_EXE} -d {workdir} -f {config}", file=sys.stderr)
         return 1
     print(f"✓ PID {p.pid} 监听 {sorted(ports)}")
     print(f"  下一步：python tools/probe_slots.py")

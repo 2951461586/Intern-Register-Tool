@@ -45,9 +45,17 @@ WORKER_DOMAIN = os.getenv("IR_WORKER_DOMAIN", "")
 SSO_BASE = "https://sso.openxlab.org.cn"
 SSO_GW = f"{SSO_BASE}/gw/uaa-be/api/v1"
 
-# 注册时使用的应用身份（来自 discovery 活动页）
-CLIENT_ID = "dagw07mkg1bazlxzoy31"
-SOURCE = "discovery"
+# 注册时使用的应用身份（来自 discovery 活动页的跳转链接）。
+#
+# 分类：**公开 app id，不是秘密** —— 它每次请求都会出现在 URL / 请求体里，
+# 目标站本来就看得见，也不授予任何额外能力。所以**保留默认值**
+# （删了流程直接跑不起来），只是允许用环境变量覆盖，方便换活动 / 换站点。
+#
+# 判据（与 docs/security-conventions.md「风控标识分类表」一致）：
+#   某个值"贴进公开仓库会不会让别人获得你的能力 / 把行为关联到你" ——
+#   会 ⇒ 必须 env 化且**默认空**；不会 ⇒ 可以留默认值，但要写清分类理由。
+CLIENT_ID = os.getenv("IR_CLIENT_ID", "dagw07mkg1bazlxzoy31")
+SOURCE = os.getenv("IR_SOURCE", "discovery")
 
 # RSA 公钥（SPKI/DER base64，服务端静态）
 SSO_PUBKEY_B64 = (
@@ -83,10 +91,18 @@ CHAT_MODELS = [
     "kimi-k2.6",
 ]
 
-# 活动邀请信息（注册跳转链接中的参数）
-INVITER_USER_ID = "415100755"
-INVITER_USERNAME = "OpenXLab-ymAqeOKDn"
-ACTIVITY_PATH = "activity/reasearch-acceleration-camp"
+# ── 活动邀请信息：已删除（2026-09-19 安全重构）──────────────────────
+# 原来这里写死了 `INVITER_USER_ID` / `INVITER_USERNAME` / `ACTIVITY_PATH`。
+# 经全库反查（按变量名 + 按值各查一遍），三者**从未被任何代码引用** ——
+# 纯死代码，却把一个**邀请码身份**永久嵌在公开仓库里：
+#   · 任何人 clone 都能看到"谁邀请的"
+#   · 会让所有使用者的注册都归到同一个邀请人头上
+#
+# 🔴 将来确实需要邀请参数时，**不要写回这里**：
+#    走环境变量（默认空），并在 docs/security-conventions.md 的
+#    「风控标识分类表」里登记。邀请码属于"能把行为和某个身份关联起来"的标识，
+#    与出口 IP 同级 —— 不进仓库。
+
 
 # ── 行为参数 ──────────────────────────────────────────────────────
 # 邮件实测在注册后 3 秒内到达；轮询间隔 0.8s 可在 1~2 次内命中，
@@ -346,9 +362,44 @@ def apply_proxy(session, proxy: str = None) -> None:
     session.trust_env = False
 
 
+# ── 脱敏助手：日志 / 输出边界必须过这里 ─────────────────────────────
+# 🔴 为什么必须有：代理串是 `scheme://user:pass@host:port` 形式，
+#    直接 print / 写日志会把**账密**一起落盘。而 `.workbuddy-ai/tmp/*.log`
+#    经常被贴进 issue 或对话里 —— 一次就够泄漏。
+#    实测 `tools/probe_proxy.py` 原来会打印 `IR_PROXY=<完整串>`（已修）。
+#
+# 用法：**凡是把配置值写进 stdout / 日志 / 报告的地方，先过这两个函数。**
+def redact_url(url: str) -> str:
+    """把 URL 的 userinfo（`user:pass@`）换成 `***`，其余保留。
+
+        http://user:pass@203.0.113.30:8080  →  http://***@203.0.113.30:8080
+        http://127.0.0.1:7901               →  原样（没有 userinfo）
+    """
+    if not url or "://" not in url:
+        return url or ""
+    scheme, _, rest = url.partition("://")
+    if "@" not in rest:
+        return url
+    _userinfo, _, hostpart = rest.rpartition("@")
+    return f"{scheme}://***@{hostpart}"
+
+
+def redact(raw: str, keep: int = 0) -> str:
+    """把凭据串打成 `<N chars>` —— **连前缀都不打**。
+
+    `keep>0` 只用于本地排查。默认 0，因为"前 6 位"这类信息
+    也足以在别处做关联（见 docs/security-conventions.md 报告规范）。
+    """
+    if not raw:
+        return ""
+    if keep and len(raw) > keep:
+        return f"{raw[:keep]}…<{len(raw)} chars>"
+    return f"<{len(raw)} chars>"
+
+
 # ── 启动校验 ──────────────────────────────────────────────────────
 def validate(*, need_worker_token: bool = True) -> list[str]:
-    """返回缺失的必需配置项（空列表 = 就绪）。
+    """返回缺失 / 有问题的必需配置项（空列表 = 就绪）。
 
     刻意**不在 import 时抛错** —— 那样连 `--help` 和离线分析都跑不起来。
     由入口显式调用，报错时直接给出修法。
@@ -362,5 +413,19 @@ def validate(*, need_worker_token: bool = True) -> list[str]:
         missing.append("IR_WORKER_BASE")
     if not WORKER_DOMAIN:
         missing.append("IR_WORKER_DOMAIN")
+
+    # 配了槽位池却没给「端口 -> 出口 IP」映射：`slot_scope()` 会在**第一个任务**
+    # 才抛错，那时已经跑了一半。提前到启动阶段报，并指路到探测器。
+    # ⚠ 这里吞掉 `proxy_slots()` 的异常 —— 槽位文件不存在也是配置错误，
+    #   但用"缺项"的形式报出来比抛 traceback 可读得多。
+    try:
+        has_slots = bool(proxy_slots())
+    except (ValueError, OSError):
+        missing.append(f"IR_PROXY_SLOTS_FILE（指向的文件读不到：{IR_PROXY_SLOTS_FILE}）")
+        has_slots = False
+    if has_slots and not SLOT_EGRESS_IPS:
+        missing.append(
+            "IR_SLOT_EGRESS_IPS（已配槽位池但缺「端口=出口IP」映射；"
+            "先跑 python tools/probe_slots.py 量出来）")
     return missing
 
