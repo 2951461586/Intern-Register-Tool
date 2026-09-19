@@ -71,5 +71,9 @@ jobs:
       - name: 安装测试依赖
         run: pip install "pytest>=8" "requests>=2.31" "cryptography>=42.0"
 
+      # ⚠ **不要在这里加 `-q`**：`pyproject.toml` 的 `addopts` 已经有一个 `-q`，
+      #    两个叠成 `-qq` 会把**汇总行吞掉** —— CI 日志里只剩一串点，
+      #    看不到 `233 passed, 6 skipped in 5.04s`。实测确认过。
+      #    需要调详细程度就改 `pyproject.toml` 的 `addopts`（一处生效）。
       - name: pytest
-        run: python -m pytest -q
+        run: python -m pytest
