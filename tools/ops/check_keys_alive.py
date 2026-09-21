@@ -35,6 +35,14 @@ key 建出来时都验过（`stages["verify"] == "ok(10 models)"`），但那是
     python tools/ops/check_keys_alive.py --csv <自己导出的清单> # 核验指定批次
     python tools/ops/check_keys_alive.py --allow-partial       # 明知只覆盖子集，别报退出码
 
+🔴 核验存活率必须加 `--interval`（>0 会自动串行）
+------------------------------------------------
+429 是**按 IP 累积的短窗口限流**，唯一能压住它的是**降速率**，不是降并发。
+2026-09-22 实测（100 批次复核）：并发 8 时 47 把里 **37 把**吃 429，汇总行读起来
+像"只有 10 把能用"；改串行 + 间隔 5s 后 **97/97 全活、死亡 0**。
+⇒ 429 现在单独成一档（`rate_limited`）并**退避重试**（`--backoff` / `--max-retry`）；
+   它**不进** `dead` —— `dead` 只认 401/403 这种确定性拒绝。
+
 退出码：0=正常（且覆盖完整）；1=从 CSV 读不到 key；3=覆盖不足（护栏触发）。
 """
 
@@ -48,6 +56,7 @@ from pathlib import Path
 
 from _path import ROOT  # noqa: F401  （副作用：把 tools/ 与仓库根加进 sys.path）
 
+from src import apikey as _ak  # noqa: E402  （判定策略：verdict_of_status / rate_limit_backoff）
 from src import ledger  # noqa: E402  （必须在 _path 之后：它才把仓库根加进 sys.path）
 
 # key 前缀只在这里定义一次，行级过滤与台账覆盖统计共用 —— 两边口径不一致
@@ -58,25 +67,52 @@ DEFAULT_CSV = ROOT / ".workbuddy-ai" / "exports" / "keys_export.csv"
 DEFAULT_LEDGER = ledger.ledger_path()
 DEFAULT_OUT = ROOT / ".workbuddy-ai" / "exports"
 
+# 429 退避的默认值。放模块层，好让 --help 与测试读到同一个数。
+DEFAULT_BACKOFF = 20.0
+DEFAULT_MAX_RETRY = 3
 
-def probe_models(key: str) -> tuple:
-    """`GET /v1/models`。返回 `(verdict, detail)`。"""
+
+def probe_models(key: str, *, backoff: float = DEFAULT_BACKOFF,
+                 max_retry: int = DEFAULT_MAX_RETRY) -> tuple:
+    """`GET /v1/models`。返回 `(verdict, detail)`。
+
+    🔴 **429 单独成一档，并且退避重试** —— 它不是 key 的问题，是"你打太快了"。
+    旧版把 429 归进 `error`，于是**复核自己造成的限流**读起来像"这把 key 有问题"：
+    2026-09-22 实测并发 8 时 47 把里 37 把是 429，差点得出"只有 10 把能用"；
+    换串行 + 间隔 5s 后 **97/97 全活、死亡 0**。
+
+    判定走 `apikey.verdict_of_status()`（纯函数，放 `src/` 才能单独测）；
+    退避时长走 `apikey.rate_limit_backoff()`（线性加长 + 封顶）。
+    """
     import requests
 
     from src import config
 
-    try:
-        r = requests.get(f"{config.CHAT_API_BASE}/models",
-                         headers={"Authorization": f"Bearer {key}"}, timeout=30)
-        if r.status_code == 200:
+    last = ""
+    for attempt in range(max_retry + 1):
+        try:
+            r = requests.get(f"{config.CHAT_API_BASE}/models",
+                             headers={"Authorization": f"Bearer {key}"}, timeout=30)
+        except Exception as ex:                               # noqa: BLE001
+            return _ak.VERDICT_ERROR, f"{type(ex).__name__}: {ex}"[:160]
+
+        verdict = _ak.verdict_of_status(r.status_code)
+        if verdict == _ak.VERDICT_ALIVE:
             models = [m.get("id", "") for m in (r.json().get("data") or [])]
-            return "alive", f"{len(models)} models"
-        # 401/403 = 鉴权不过 → key 死了。其他码单独归类，别混成"死"。
-        if r.status_code in (401, 403):
-            return "dead", f"HTTP {r.status_code} {r.text[:120]}"
-        return "error", f"HTTP {r.status_code} {r.text[:120]}"
-    except Exception as ex:                                   # noqa: BLE001
-        return "error", f"{type(ex).__name__}: {ex}"[:160]
+            return verdict, f"{len(models)} models"
+        if verdict == _ak.VERDICT_DEAD:
+            # 只有 401/403 会走到这里 —— 其余码一律不算"key 死了"。
+            return verdict, f"HTTP {r.status_code} {r.text[:120]}"
+        if verdict == _ak.VERDICT_RATE_LIMITED:
+            last = f"HTTP 429 {r.text[:120]}"
+            if attempt < max_retry:
+                delay = _ak.rate_limit_backoff(attempt, base=backoff)
+                print(f"    · 429 → 退避 {delay:.0f}s 后重试（{attempt + 1}/{max_retry}）")
+                time.sleep(delay)
+                continue
+            return verdict, f"{last}（退避重试 {attempt + 1} 次仍是 429）"
+        return verdict, f"HTTP {r.status_code} {r.text[:120]}"
+    return _ak.VERDICT_ERROR, last                             # pragma: no cover
 
 
 def probe_chat(key: str, model: str = None) -> tuple:
@@ -108,6 +144,14 @@ def main() -> int:
                     help="权威台账（只用来检查快照是否过期，不参与测试）")
     ap.add_argument("--limit", type=int, default=0, help="只测前 N 把（0=全部）")
     ap.add_argument("--workers", type=int, default=8, help="并发数")
+    ap.add_argument("--interval", type=float, default=0.0,
+                    help="每把 key 之间的间隔秒数；>0 会**强制串行**"
+                         "（429 是降速率问题，不是降并发问题）")
+    ap.add_argument("--backoff", type=float, default=DEFAULT_BACKOFF,
+                    help=f"命中 429 后的退避基数秒（线性加长，封顶 "
+                         f"{_ak.RATE_LIMIT_BACKOFF_CAP:.0f}s）")
+    ap.add_argument("--max-retry", type=int, default=DEFAULT_MAX_RETRY,
+                    help="命中 429 时最多重试几次（0=不重试，直接报 rate_limited）")
     ap.add_argument("--sample", type=int, default=3,
                     help="抽样几把做真实推理（0=跳过）")
     ap.add_argument("--model", default=None, help="推理用的模型（默认 config 第一个）")
@@ -157,29 +201,65 @@ def main() -> int:
         print(f"✗ 从 {args.csv} 读不到 key（共 {len(all_rows)} 行）")
         return 1
 
-    print(f"检查 {len(rows)} 把 key（并发 {args.workers}）→ {args.csv}")
+    # ── 速率护栏 ────────────────────────────────────────────────
+    # 429 是**按 IP 累积的短窗口限流** ⇒ 唯一能压住它的是**降速率**，不是降并发。
+    # 2026-09-22 实测：并发 8 时 47 把里 37 把吃 429，读起来像"只有 10 把能用"；
+    # 串行 + 间隔 5s ⇒ 97/97 全活、0 死亡。下面两条提示就是那次教训。
+    if args.interval > 0 and args.workers != 1:
+        print(f"⚠ --interval {args.interval}s 是**降速率**手段，与并发 {args.workers} 冲突。")
+        print("   ⇒ 已强制串行（要保留并发请传 --interval 0）。")
+        args.workers = 1
+    if args.interval <= 0 and args.workers > 1:
+        print(f"⚠ 并发 {args.workers} 且无间隔 —— 这是**已知会打出假 429** 的配置：")
+        print("   429 会被退避重试吸收，但结果里仍可能出现 `rate_limited` 档，")
+        print("   那些 key 的存活状态是**未知**，不是失败。核验存活率请用 --interval 5。")
+
+    mode = (f"串行 + 间隔 {args.interval}s" if args.interval > 0
+            else f"并发 {args.workers}")
+    print(f"检查 {len(rows)} 把 key（{mode}）→ {args.csv}")
     t0 = time.time()
     out = {}
-    with ThreadPoolExecutor(max_workers=args.workers) as ex:
-        futs = {ex.submit(probe_models, r["api_key"]): r for r in rows}
-        for f in as_completed(futs):
-            r = futs[f]
-            verdict, detail = f.result()
-            out[r["api_key"]] = {"email": r["email"], "verdict": verdict,
-                                 "detail": detail}
+
+    def _record(r: dict, verdict: str, detail: str) -> None:
+        out[r["api_key"]] = {"email": r["email"], "verdict": verdict,
+                             "detail": detail}
+
+    if args.interval > 0:
+        # 串行：每把之间隔 interval 秒。**最后一把之后不睡**，别白等。
+        for i, r in enumerate(rows):
+            verdict, detail = probe_models(r["api_key"], backoff=args.backoff,
+                                           max_retry=args.max_retry)
+            _record(r, verdict, detail)
+            if i < len(rows) - 1:
+                time.sleep(args.interval)
+    else:
+        with ThreadPoolExecutor(max_workers=args.workers) as ex:
+            futs = {ex.submit(probe_models, r["api_key"], backoff=args.backoff,
+                              max_retry=args.max_retry): r for r in rows}
+            for f in as_completed(futs):
+                r = futs[f]
+                verdict, detail = f.result()
+                _record(r, verdict, detail)
     dt = time.time() - t0
 
-    alive = [k for k, v in out.items() if v["verdict"] == "alive"]
-    dead = [k for k, v in out.items() if v["verdict"] == "dead"]
-    err = [k for k, v in out.items() if v["verdict"] == "error"]
+    alive = [k for k, v in out.items() if v["verdict"] == _ak.VERDICT_ALIVE]
+    dead = [k for k, v in out.items() if v["verdict"] == _ak.VERDICT_DEAD]
+    rl = [k for k, v in out.items() if v["verdict"] == _ak.VERDICT_RATE_LIMITED]
+    err = [k for k, v in out.items() if v["verdict"] == _ak.VERDICT_ERROR]
 
+    rate = (len(out) * 60.0 / dt) if dt else 0.0
     print(f"\n{'=' * 70}")
-    print(f"存活 {len(alive)}/{len(out)}   死亡 {len(dead)}   异常 {len(err)}"
-          f"   （{dt:.1f}s）")
+    print(f"存活 {len(alive)}/{len(out)}   死亡 {len(dead)}   "
+          f"限流 {len(rl)}   异常 {len(err)}   （{dt:.1f}s，{rate:.1f} 把/分）")
     if dead:
-        print("\n死亡的 key（前 10）：")
+        print("\n死亡的 key（前 10）—— 只有 401/403 会进这里：")
         for k in dead[:10]:
             print(f"  {out[k]['email']:38s} {k[:16]}…  {out[k]['detail'][:70]}")
+    if rl:
+        print("\n限流的 key（**不是 key 的问题**，是你打太快了）：")
+        print("  ⇒ 这些 key 的存活状态**未知**，别当成失败。重跑请加 --interval 5。")
+        for k in rl[:10]:
+            print(f"  {out[k]['email']:38s} {out[k]['detail'][:80]}")
     if err:
         print("\n异常（非鉴权失败，别当成 key 死了）：")
         for k in err[:10]:
@@ -199,6 +279,7 @@ def main() -> int:
             print(f"  {'✓' if ok else '✗'} {out[k]['email']:38s} {detail}")
 
     print(f"\n结论：{len(alive)}/{len(out)} 把 key 通过鉴权"
+          + (f"；**{len(rl)} 把限流、存活状态未知**" if rl else "")
           + (f"；抽样推理 {chat_ok}/{chat_ok + chat_bad} 成功" if args.sample else ""))
     print("=" * 70)
 
@@ -208,8 +289,11 @@ def main() -> int:
     rep.write_text(json.dumps(
         {"checked_at": time.strftime("%Y-%m-%d %H:%M:%S"),
          "total": len(out), "alive": len(alive), "dead": len(dead),
-         "error": len(err), "chat_sample_ok": chat_ok,
-         "chat_sample_fail": chat_bad,
+         # 🔴 429 单独进 artifact：它**不是** key 的结论，而是"这次测法太快了"。
+         #    混进 dead/error 都会让事后单独打开这份 JSON 的人读错。
+         "rate_limited": len(rl), "error": len(err),
+         "interval_s": args.interval, "backoff_s": args.backoff,
+         "chat_sample_ok": chat_ok, "chat_sample_fail": chat_bad,
          # 🔴 `coverage` 必须进 artifact：光打印的话，几天后单独打开这份 JSON
          #    就是"total=53, alive=53"，看不出它只覆盖了台账的 53/605。
          "coverage": coverage,

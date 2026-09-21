@@ -107,3 +107,66 @@ def chat(key: str, prompt: str, *, model: str = None, timeout: int = 180,
                           reasoning=msg.get("reasoning_content") or "")
     except Exception as ex:
         return ChatResult(ok=False, model=model, error=f"{type(ex).__name__}: {ex}"[:200])
+
+
+# ── 存活性探针的判定策略 ────────────────────────────────────────────
+#
+# 为什么抽成纯函数放 `src/`，而不是内联在 tools/ops/check_keys_alive.py 里
+# -------------------------------------------------------------------------
+# 那个工具是 CLI，**测试链不 import 它**（它要发真实网络请求）。判据一旦内联，
+# 就只剩"跑一遍看输出"这一种验证方式 —— 而它的失效形态恰恰是**输出看着合理**。
+#
+# 2026-09-22 实测的代价：旧版把 429 归进 `error`，复核时并发 8 打出去，
+# 47 把里 37 把是 429，汇总行读起来像"只有 10 把 key 能用"。
+# 换成串行 + 间隔 5s 后 **97/97 全活、`dead` 0** —— 那 37 个全是**复核自己造成的**。
+# ⇒ 429 必须单独成一档，且"退避多久"也得是能单独测的判据。
+
+VERDICT_ALIVE = "alive"
+VERDICT_DEAD = "dead"
+VERDICT_RATE_LIMITED = "rate_limited"
+VERDICT_ERROR = "error"
+
+# 🔴 **只有**这两个码是确定性拒绝 —— 只有它们配叫「key 死了」。
+#    其余（超时 / 5xx / 代理抖动 / 限流）都是**状态未知**，混进 `dead` 会凭空造故障。
+DEAD_STATUS = (401, 403)
+RATE_LIMIT_STATUS = 429
+
+# 429 退避封顶：再久也不该超过一个"短窗口限流"的量级。
+RATE_LIMIT_BACKOFF_CAP = 120.0
+
+
+def verdict_of_status(code: int | None) -> str:
+    """把探针拿到的 HTTP 状态码映射成四档结论之一。
+
+    | 码 | 结论 | 含义 |
+    |---|---|---|
+    | 200 | `alive` | 鉴权通过、网关能列模型 |
+    | 401 / 403 | `dead` | 鉴权被**确定性**拒绝 ⇒ 这把 key 真死了 |
+    | 429 | `rate_limited` | **你打太快了**，与 key 无关 ⇒ 存活状态**未知** |
+    | 其它 / None | `error` | 状态未知（超时、5xx、代理抖动） |
+
+    ⚠ `rate_limited` 与 `error` 都**不是** `dead`。把 429 读成"key 不可用"
+      是本项目最容易犯的误读（见本节顶部的实测）。
+    """
+    if code == 200:
+        return VERDICT_ALIVE
+    if code in DEAD_STATUS:
+        return VERDICT_DEAD
+    if code == RATE_LIMIT_STATUS:
+        return VERDICT_RATE_LIMITED
+    return VERDICT_ERROR
+
+
+def rate_limit_backoff(attempt: int, *, base: float = 20.0) -> float:
+    """命中 429 后，第 `attempt` 次重试（0-based）之前该睡多少秒。
+
+    **线性加长 + 封顶**：`base × (attempt + 1)`，不超过 `RATE_LIMIT_BACKOFF_CAP`。
+
+    为什么线性而不是指数：429 是**按 IP 累积的短窗口限流**，窗口会自己滑走，
+    目标只是"让这一轮打出去的请求密度降下来"，不是"等一个越来越坏的东西好起来"。
+    指数退避在这里会把一个 5 秒的窗口等成几分钟（本项目在槽位池那边吃过这个亏）。
+
+    ⚠ 与"网络抖动"的处置**相反**：抖动该按固定间隔重试（抖动是随机的，
+      不是"这个出口越来越坏"的证据）；429 该加长间隔（它**就是**"你现在太频繁"的证据）。
+    """
+    return min(base * (attempt + 1), RATE_LIMIT_BACKOFF_CAP)
