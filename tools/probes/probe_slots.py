@@ -233,7 +233,14 @@ def main() -> int:
             "no_egress": dead,
             "results": results,
         }, ensure_ascii=False, indent=2), encoding="utf-8")
-        print(f"\n报告已落盘：{out.relative_to(ROOT)}")
+        # 🔴 `--out` 允许指到仓库外。仓库外路径做 `relative_to` 会抛 ValueError，
+        #    把一次**已经成功落盘**的运行变成崩溃退出 —— 结果全对，只是打印炸了。
+        #    （2026-09-22 实测踩到。）
+        try:
+            shown = out.relative_to(ROOT)
+        except ValueError:
+            shown = out
+        print(f"\n报告已落盘：{shown}")
 
     print(f"耗时 {wall}s")
     usable = len(by_ip)

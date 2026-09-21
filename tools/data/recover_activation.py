@@ -192,7 +192,12 @@ def main() -> int:
         "targets": targets, "results": results,
         "recovered": [r["email"] for r in ok],
     }, ensure_ascii=False, indent=2), encoding="utf-8")
-    print(f"报告已落盘：{rp.relative_to(ROOT)}")
+    # 同 probe_slots.py：`--report` 可指到仓库外，别让打印把成功运行搞崩。
+    try:
+        shown = rp.relative_to(ROOT)
+    except ValueError:
+        shown = rp
+    print(f"报告已落盘：{shown}")
 
     if args.write and ok:
         # 复用 ledger 的并集合并 —— 不能自己写一遍，那条规则只有一处实现。

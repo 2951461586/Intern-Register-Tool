@@ -484,8 +484,13 @@ def main() -> int:
     print("启动独立实例（**不是** Clash Verge）：")
     # 🔴 不写真实本机路径 —— 绝对路径会暴露目录结构 / 项目代号，
     #    属于"基础设施标识"（见 docs/security-conventions.md）。
+    # 同 probe_slots.py：`--out` 可指到仓库外。
+    try:
+        shown_out = Path(args.out).relative_to(ROOT)
+    except ValueError:
+        shown_out = Path(args.out)
     print(f'  "<你的 mihomo 可执行文件>" -d {DEFAULT_DIR.relative_to(ROOT)}'
-          f' -f {Path(args.out).relative_to(ROOT)}')
+          f' -f {shown_out}')
     print("验证槽位出口 IP：python tools/probes/probe_slots.py")
     print("=" * 72)
 
