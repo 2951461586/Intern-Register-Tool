@@ -1207,7 +1207,7 @@ quota guard: 已确认 B0000（累计配额触顶），未发注册请求
 | 文件 | 内容 |
 |------|------|
 | `keys_export.csv` / `.json` / `keys_only.txt` | 历史 key 导出（`tools/data/export_keys.py`） |
-| `keys_alive.json` | 存活性报告（`tools/ops/check_keys_alive.py`）：`total/alive/dead/error` + 抽样推理结果 |
+| `keys_alive.json` | 存活性报告（`tools/ops/check_keys_alive.py`）：`total/alive/dead/error` + 抽样推理结果 + `coverage`（台账/快照/未覆盖数，见下） |
 
 **⚠ 前缀过滤会静默丢行**：`check_keys_alive.py` 只认 `api_key` 以 `sk-` 开头的行。
 平台一旦改前缀（或 CSV 列名变了），它会**少测而不报错**，报告照样"全绿"。
@@ -1217,6 +1217,23 @@ quota guard: 已确认 B0000（累计配额触顶），未发注册请求
 ⚠ 跳过 1/4 行：api_key 缺失或不以 'sk-' 开头
    （若这是意外，说明 CSV 列名或 key 前缀变了，别当成'没有死 key'）
 ```
+
+**🔴 文件级防静默缩水（比上面那条高一层）**：`keys_export.csv` 是**某次快照**，
+不随批次刷新。快照停在几天前时，行级过滤一切正常，但**连分母本身都是错的** ——
+实测（2026-09-21）：快照 53 把 / 台账 605 把，跑出"53/53 存活"这种
+**没测到却像全绿**的结论。
+
+护栏落在**三处**，缺任何一处都会留下"artifact 看着全绿"的口子：
+
+| 落点 | 内容 |
+|------|------|
+| stdout | `⚠ 导出快照**落后于台账**：台账 N 把带 key / 快照 M 把，本次结论**不覆盖**…` |
+| artifact | `keys_alive.json` 的 `coverage` 块：`ledger_n` / `known_n` / `uncovered` / `covers_ledger` + 来源路径（**相对仓库根**，不带盘符） |
+| 退出码 | 覆盖不足返回 `3`（与 `run.py` 的防静默缩水护栏同码）—— 只打印不改退出码的话，脚本化调用读到的是"成功" |
+
+只想核验一个子集时用 `--allow-partial` 显式放行（退出码才回到 0）。
+`tools/probes/probe_login_only.py` 是**同一道护栏的另一半**（比的是 `email` 不是
+`api_key`），两边的 `coverage` 块与退出码保持一致。
 
 **负对照验证**（2026-09-16，证明这个检查器不是"永远返回存活"）：
 

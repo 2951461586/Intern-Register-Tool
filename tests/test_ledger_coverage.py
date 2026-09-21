@@ -240,9 +240,98 @@ def test_tool_actually_wires_the_guard(name):
     # 光"算了覆盖"不够 —— 得**真的告警**。少了这一条，把整个 `if missing:`
     # 告警块删掉（保留计算）本用例仍会绿，而那正是护栏失效的主路径。
     assert "if missing:" in src, f"{name} 算了覆盖却没有告警分支 —— 护栏等于没接"
+    # ── 2026-09-21 补：护栏不能只走 stdout ──────────────────────────
+    # 上面三条只保证"算了覆盖 + 打了告警"。但告警**只存在于当时的终端输出**里：
+    # 事后单独打开 artifact（或由它派生的报告）看到的是"total=53, alive=53"，
+    # 连"分母"这个概念都没有。而退出码恒为 0 ⇒ 脚本化调用读到"成功"。
+    # 下面四条分别钉住「退出码判据被调用」「放行开关被接线」「artifact 带覆盖块」
+    # 「返回值不再是硬编码 0」。删掉任何一处都会让本用例变红。
+    assert "ledger.coverage_exit_code(" in src, f"{name} 没接退出码判据"
+    assert "allow_partial=args.allow_partial" in src, f"{name} 接了判据却没接放行开关 —— --allow-partial 会静默无效"
+    assert '"coverage": coverage' in src, f"{name} 算了覆盖却没写进 artifact —— 事后单独看 artifact 仍是'全绿'"
+    assert "return gap_rc" in src, f"{name} 护栏触发了却仍返回固定值 —— 脚本化调用会读到'成功'"
 
 
 def test_check_keys_alive_shares_the_prefix_constant():
     """前缀只定义一次：行级过滤与覆盖统计各认一套口径会互相掩盖。"""
     src = TOOLS["check_keys_alive"][0].read_text(encoding="utf-8")
     assert "KEY_PREFIX = ledger.KEY_PREFIX" in src
+
+
+# ── artifact 落点与退出码策略（2026-09-21 补）───────────────────────
+#
+# 背景：护栏原来**只走 stdout**。事后单独打开 `keys_alive.json` 看到的是
+# "total=53, alive=53"，看不出它只覆盖了台账的 53/605 —— artifact 里连
+# "分母"这个概念都没有。这是同一类缺陷的第三层：
+#   行级缩水（分母变了）→ 文件级缩水（分母本身是错的）→ artifact 级（没有分母）
+
+
+def test_coverage_block_reports_the_gap():
+    blk = ledger.coverage_block(605, 53, {f"sk-{i}" for i in range(552)})
+    assert blk["ledger_n"] == 605
+    assert blk["known_n"] == 53
+    assert blk["uncovered"] == 552
+    assert blk["covers_ledger"] is False
+
+
+def test_coverage_block_full_coverage():
+    blk = ledger.coverage_block(53, 53, set())
+    assert blk["uncovered"] == 0
+    assert blk["covers_ledger"] is True
+
+
+def test_coverage_block_strips_drive_letters_from_source_paths():
+    """来源路径必须相对化 —— 绝对路径带盘符/用户名，拷进仓库就撞泄漏闸门。
+
+    🔴 这是**防回归**不是风格偏好：artifact 在 `.workbuddy-ai/` 下（gitignored），
+       但"它不会被提交"守不住，所以直接把形态消掉。
+    """
+    blk = ledger.coverage_block(
+        1, 1, set(),
+        ledger=ledger.ROOT / "ledger" / "x.json",
+        snapshot=ledger.ROOT / "a" / "b.csv")
+    assert blk["ledger"] == "ledger/x.json"
+    assert blk["snapshot"] == "a/b.csv"
+    assert ":" not in blk["ledger"]
+
+
+def test_coverage_block_keeps_outside_paths_verbatim():
+    """仓库外的路径无法相对化 —— 兜底原样返回。
+
+    ⚠ 有意的：伪造一个假的相对路径，比如实暴露绝对路径更坏（后者至少可查）。
+    """
+    outside = ledger.ROOT.parent / "definitely-not-in-repo.csv"
+    blk = ledger.coverage_block(1, 1, set(), ledger=outside)
+    assert blk["ledger"] == str(outside)
+
+
+def test_coverage_block_handles_missing_sources():
+    blk = ledger.coverage_block(1, 1, set())
+    assert blk["ledger"] == ""
+    assert blk["snapshot"] == ""
+
+
+def test_coverage_exit_code_is_fatal_by_default():
+    """默认**不放行**。
+
+    ⚠ 这是**策略锁**，不是"有分支的判据"：它钉的是"覆盖不足默认让调用方炸"
+      这个决定本身。别读成覆盖了复杂逻辑。
+    """
+    assert ledger.coverage_exit_code({"sk-a"}) == ledger.EXIT_COVERAGE_GAP
+    assert ledger.coverage_exit_code({"sk-a"}) != 0
+
+
+def test_coverage_exit_code_zero_when_fully_covered():
+    assert ledger.coverage_exit_code(set()) == 0
+
+
+def test_coverage_exit_code_allow_partial_opts_out():
+    assert ledger.coverage_exit_code({"sk-a"}, allow_partial=True) == 0
+
+
+def test_exit_coverage_gap_matches_run_py_guard_code():
+    """与 `run.py` 的防静默缩水护栏**同码**（那边 `except ValueError` 分支 return 3）。
+
+    ⚠ 钉数值就是钉契约：改它等于改所有调用方的语义。真要改，两边一起改。
+    """
+    assert ledger.EXIT_COVERAGE_GAP == 3

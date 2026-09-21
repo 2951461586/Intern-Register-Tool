@@ -21,11 +21,21 @@ key 建出来时都验过（`stages["verify"] == "ok(10 models)"`），但那是
   没有这道护栏时，快照停在几天前会让你看到"53/53 全绿"这种**没测到却像全绿**的结论
   （2026-09-20 实测踩到）。
 
+🔴 护栏**不止告警**，还得落在两处（2026-09-21 补）：
+  1. `keys_alive.json` 的 `coverage` 块 —— 否则事后单独看这份 artifact
+     （或由它派生的报告）就是"53/53 全绿"，**artifact 里连分母这个概念都没有**；
+  2. **退出码** —— 覆盖不足返回 `ledger.EXIT_COVERAGE_GAP`（3，与 `run.py`
+     的防静默缩水护栏同码）。只打印不改退出码的话，脚本化调用读到的是"成功"。
+  确实只想核验一个子集时，加 `--allow-partial` 显式放行。
+
 用法：
     python tools/ops/check_keys_alive.py                       # 全部 + 抽样 3 个真推理
     python tools/ops/check_keys_alive.py --sample 5 --workers 8
     python tools/ops/check_keys_alive.py --limit 10            # 只测前 10 把
     python tools/ops/check_keys_alive.py --csv <自己导出的清单> # 核验指定批次
+    python tools/ops/check_keys_alive.py --allow-partial       # 明知只覆盖子集，别报退出码
+
+退出码：0=正常（且覆盖完整）；1=从 CSV 读不到 key；3=覆盖不足（护栏触发）。
 """
 
 import argparse
@@ -103,6 +113,8 @@ def main() -> int:
     ap.add_argument("--model", default=None, help="推理用的模型（默认 config 第一个）")
     ap.add_argument("--out", default=str(DEFAULT_OUT),
                     help="输出**目录**（工具会在其中写 keys_alive.json，不是文件路径）")
+    ap.add_argument("--allow-partial", action="store_true",
+                    help="允许快照只覆盖台账的一部分（默认覆盖不足会返回退出码 3）")
     args = ap.parse_args()
 
     with Path(args.csv).open(encoding="utf-8-sig") as f:
@@ -123,6 +135,11 @@ def main() -> int:
     # 看着没问题，其实完全没覆盖当时那一批。
     ledger_n, csv_n, missing = ledger.key_coverage(
         ledger.load_existing(args.ledger), {r["api_key"] for r in rows})
+    # 判据放在 `src/ledger.py`（纯函数），这里只接线 —— 理由同 `quota.shortfall_hint`：
+    # 内联分支没法单独测，而测试链不该 import 本脚本（它要发真实网络请求）。
+    gap_rc = ledger.coverage_exit_code(missing, allow_partial=args.allow_partial)
+    coverage = ledger.coverage_block(ledger_n, csv_n, missing,
+                                     ledger=args.ledger, snapshot=args.csv)
     if missing:
         print(f"⚠ 导出快照**落后于台账**：台账 {ledger_n} 把带 key / 快照 {csv_n} 把，"
               f"本次结论**不覆盖**台账里多出的 {len(missing)} 把。")
@@ -130,6 +147,9 @@ def main() -> int:
         print(f"    台账：{args.ledger}")
         print("    ⇒ 这不是'没有死 key'，是**没测到**。"
               "要核验全量请先按当前台账重新导出，或改用别的取样口径。")
+        if gap_rc:
+            print(f"    ⇒ 退出码 {gap_rc}（护栏触发）。"
+                  f"确实只想核验一个子集请加 --allow-partial。")
 
     if args.limit:
         rows = rows[:args.limit]
@@ -190,9 +210,12 @@ def main() -> int:
          "total": len(out), "alive": len(alive), "dead": len(dead),
          "error": len(err), "chat_sample_ok": chat_ok,
          "chat_sample_fail": chat_bad,
+         # 🔴 `coverage` 必须进 artifact：光打印的话，几天后单独打开这份 JSON
+         #    就是"total=53, alive=53"，看不出它只覆盖了台账的 53/605。
+         "coverage": coverage,
          "keys": out}, ensure_ascii=False, indent=2), encoding="utf-8")
     print(f"报告已落盘 {rep}")
-    return 0
+    return gap_rc
 
 
 if __name__ == "__main__":

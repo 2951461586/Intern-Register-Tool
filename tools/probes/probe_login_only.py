@@ -27,10 +27,18 @@
   来自一个很小的旧样本（2026-09-20 实测：快照 53 行、全是 5 天前的账号，
   而台账已有 417 个）。
 
+🔴 与 `check_keys_alive.py` 是**同一道护栏的两半，改一处就要改两处**（2026-09-21 补）：
+  覆盖不足时**退出码非 0**（`ledger.EXIT_COVERAGE_GAP`），并在 `--out` 的 JSON
+  里写 `coverage` 块。只告警不改退出码的话，脚本化调用读到的是"成功"。
+  只想测一个子集时加 `--allow-partial` 显式放行。
+
 用法：
     python tools/probes/probe_login_only.py --workers 2 --count 6 --offset 0
     python tools/probes/probe_login_only.py --workers 3 --count 6 --offset 6
     python tools/probes/probe_login_only.py --csv <自己导出的清单> --count 10
+    python tools/probes/probe_login_only.py --allow-partial --count 3   # 明知只覆盖子集
+
+退出码：0=正常（且覆盖完整）；1=从 CSV 取不到账号；3=覆盖不足（护栏触发）。
 """
 
 import argparse
@@ -124,6 +132,8 @@ def main() -> int:
     ap.add_argument("--with-discovery", action="store_true",
                     help="登录后跑一遍**只读**的 Stage 4（用户信息/额度/余额/key 列表）")
     ap.add_argument("--out", default=None, help="结果 JSON 落盘路径")
+    ap.add_argument("--allow-partial", action="store_true",
+                    help="允许快照只覆盖台账的一部分（默认覆盖不足会返回退出码 3）")
     args = ap.parse_args()
 
     accts, snapshot_rows = load_accounts(Path(args.csv), args.offset, args.count)
@@ -135,12 +145,20 @@ def main() -> int:
     # 登录本身没问题，但**结论的适用范围**被静默限死了。
     ledger_n, csv_n, missing = ledger.account_coverage(
         ledger.load_existing(args.ledger), {r["email"] for r in snapshot_rows})
+    # 与 `check_keys_alive.py` 同一道护栏的另一半 —— 判据同样在 `src/ledger.py`，
+    # 这里只接线。两边形状必须一致，否则"只改一半"会让其中一边静默失效。
+    gap_rc = ledger.coverage_exit_code(missing, allow_partial=args.allow_partial)
+    coverage = ledger.coverage_block(ledger_n, csv_n, missing,
+                                     ledger=args.ledger, snapshot=args.csv)
     if missing:
         print(f"⚠ 账号来源快照**落后于台账**：台账 {ledger_n} 个账号 / 快照 {csv_n} 个，"
               f"本次只从快照取号，**够不到**台账里多出的 {len(missing)} 个。")
         print(f"    快照：{args.csv}")
         print(f"    台账：{args.ledger}")
         print("    ⇒ 结论只对快照里那批账号成立，别当成'全量账号都能登录'。")
+        if gap_rc:
+            print(f"    ⇒ 退出码 {gap_rc}（护栏触发）。"
+                  f"确实只想测一个子集请加 --allow-partial。")
 
     if not accts:
         print(f"✗ 从 {args.csv} 取不到账号（offset={args.offset} count={args.count}）")
@@ -263,9 +281,12 @@ def main() -> int:
         p.write_text(json.dumps(
             {"workers": args.workers, "headless": args.headless,
              "offset": args.offset, "wall_s": round(wall, 2),
+             # 🔴 与 `check_keys_alive.py` 同一道护栏的另一个落点：artifact 必须
+             #    自带覆盖信息，否则几天后单独打开看不出样本只有 53 个。
+             "coverage": coverage,
              "records": out}, ensure_ascii=False, indent=2), encoding="utf-8")
         print(f"已落盘 {p}")
-    return 0
+    return gap_rc
 
 
 if __name__ == "__main__":

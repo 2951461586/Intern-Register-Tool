@@ -250,6 +250,74 @@ def account_coverage(records, known_emails) -> tuple:
         known_emails)
 
 
+# 覆盖不足时的退出码。**与 `run.py` 的"防静默缩水"护栏同码**（那边在
+# `except ValueError` 分支里也是 `return 3`）—— "护栏触发"在仓库里只该有
+# 一个含义，别为每个工具各发明一个数字。
+EXIT_COVERAGE_GAP = 3
+
+
+def _repo_rel(path) -> str:
+    """路径归一化成**相对仓库根**的 posix 串；不在仓库内则原样返回。
+
+    🔴 artifact 里不能存绝对路径
+    ---------------------------
+    绝对路径带盘符和用户名，一旦这份 artifact 被拷进仓库就会撞泄漏闸门的
+    `ABS_PATH_RE`。artifact 本身在 `.workbuddy-ai/` 下、是 gitignored 的，
+    但"它不会被提交"不是一条靠人守得住的规则 —— 这里直接把形态消掉。
+
+    ⚠ 落在仓库外的路径无法相对化，会原样返回绝对路径。这是**有意的**兜底：
+       伪造一个假的相对路径，比如实暴露绝对路径更坏。
+    """
+    if not path:
+        return ""
+    try:
+        return Path(path).resolve().relative_to(ROOT).as_posix()
+    except (ValueError, OSError):
+        return str(path)
+
+
+def coverage_block(ledger_n, known_n, missing, *, ledger=None, snapshot=None) -> dict:
+    """把覆盖三元组整理成 artifact 里的 `coverage` 块。
+
+    🔴 为什么它必须进 artifact，而不能只打印
+    ---------------------------------------
+    护栏只走 stdout 的话，**事后单独看 artifact**（或由它派生的报告）就是
+    "53/53 全绿" —— 看不出它只覆盖了台账的 53/605。stdout 不随 artifact 走，
+    而 artifact 才是被反复引用、被派生、几天后又被重新打开的那份东西。
+
+    这是同一类缺陷的**第三层**：
+      行级缩水（分母变了）→ 文件级缩水（分母本身是错的）→
+      **artifact 级缩水（artifact 里根本没有"分母"这个概念）**。
+
+    `ledger` / `snapshot` 是来源路径，过 `_repo_rel()` 去掉盘符。
+    """
+    return {
+        "ledger_n": ledger_n,
+        "known_n": known_n,
+        "uncovered": len(missing),
+        "covers_ledger": not missing,
+        "ledger": _repo_rel(ledger),
+        "snapshot": _repo_rel(snapshot),
+    }
+
+
+def coverage_exit_code(missing, *, allow_partial: bool = False) -> int:
+    """覆盖不足且未显式放行 → `EXIT_COVERAGE_GAP`，否则 0。
+
+    ⚠ 这是一个**策略锁**，不是"有分支的判据"：配套用例钉的是"默认不放行"
+      这个决定本身。别把它读成覆盖了复杂逻辑。
+
+    🔴 为什么退出码必须非 0
+    ----------------------
+    护栏原来只 `print`，`main()` 照样 `return 0` —— 任何脚本化调用都会读到
+    "成功"。本项目对"静默"的容忍度是零：宁可让调用方炸，也不要让一份只覆盖
+    53/605 的报告被当成全量结论。
+    """
+    if allow_partial or not missing:
+        return 0
+    return EXIT_COVERAGE_GAP
+
+
 def merge_records(existing: list[dict], new: list[dict]):
     """按 `email` 合并，返回 `(merged, 原有条数, 新增, 覆盖数)`。
 
