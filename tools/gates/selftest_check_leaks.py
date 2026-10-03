@@ -36,15 +36,15 @@ from _path import ROOT  # noqa: E402  （副作用：把 tools/ 与仓库根加�
 # 🔴 Windows 中文控制台默认 GBK，打印 ✓ / ✗ 会抛 UnicodeEncodeError。
 #    与 `check_leaks.py` 同一个坑（那个是 pre-commit 钩子，本文件是 CI 自检）。
 #    本文件是 `__main__` 脚本、只加载一次，所以模块级包一次即可（带幂等护栏）。
-if (hasattr(sys.stdout, "buffer")
-        and (getattr(sys.stdout, "encoding", "") or "").lower().replace("-", "") != "utf8"):
-    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8",
-                                  errors="replace")
-    sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding="utf-8",
-                                  errors="replace")
+if (
+    hasattr(sys.stdout, "buffer")
+    and (getattr(sys.stdout, "encoding", "") or "").lower().replace("-", "") != "utf8"
+):
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
+    sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding="utf-8", errors="replace")
 
 REPO = ROOT
-GATE = Path(__file__).resolve().parent / "check_leaks.py"   # 与本文件同目录
+GATE = Path(__file__).resolve().parent / "check_leaks.py"  # 与本文件同目录
 
 PASS, FAIL = "✓", "✗"
 _fails = []
@@ -74,20 +74,30 @@ BAD_TOKEN = "gh" + "p_" + "A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8"
 BAD_WORKER = "mytool-abc123xyz" + "." + "workers" + "." + "dev"
 BAD_PATH = "F" + ":" + "/IDE/" + "secret-tool/bin/tool.exe"
 
-BAD_TEXT = "\n".join([
-    f"出口 {BAD_IP}",
-    f"代理 {BAD_CRED}",
-    f"token {BAD_TOKEN}",
-    f"worker https://{BAD_WORKER}/api",
-    f"内核 {BAD_PATH}",
-]) + "\n"
+BAD_TEXT = (
+    "\n".join(
+        [
+            f"出口 {BAD_IP}",
+            f"代理 {BAD_CRED}",
+            f"token {BAD_TOKEN}",
+            f"worker https://{BAD_WORKER}/api",
+            f"内核 {BAD_PATH}",
+        ]
+    )
+    + "\n"
+)
 
-CLEAN_TEXT = "\n".join([
-    "出口 203.0.113.11",              # RFC 5737 文档段 → 放行
-    "代理 203.0.113.30:764:USERNAME:PASSWORD",   # 占位词 → 放行
-    "worker https://<worker>.<your-subdomain>.workers.dev",
-    "内核 <你的 mihomo 可执行文件>",
-]) + "\n"
+CLEAN_TEXT = (
+    "\n".join(
+        [
+            "出口 203.0.113.11",  # RFC 5737 文档段 → 放行
+            "代理 203.0.113.30:764:USERNAME:PASSWORD",  # 占位词 → 放行
+            "worker https://<worker>.<your-subdomain>.workers.dev",
+            "内核 <你的 mihomo 可执行文件>",
+        ]
+    )
+    + "\n"
+)
 
 
 def load_gate() -> Any:
@@ -98,7 +108,7 @@ def load_gate() -> Any:
       不用这个），不如把“这是动态模块对象”写进签名。
     """
     spec = importlib.util.spec_from_file_location("check_leaks_mod", GATE)
-    if spec is None or spec.loader is None:          # pragma: no cover
+    if spec is None or spec.loader is None:  # pragma: no cover
         raise RuntimeError(f"加载不了闸门：{GATE}")
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
@@ -118,7 +128,11 @@ def make_repo(tmp: Path, files: dict) -> None:
 def run_gate(root: Path, *extra):
     p = subprocess.run(
         [sys.executable, str(GATE), "--root", str(root), *extra],
-        capture_output=True, text=True, encoding="utf-8", errors="replace")
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
     return p.returncode, (p.stdout or "") + (p.stderr or "")
 
 
@@ -131,14 +145,14 @@ def main() -> int:
     print("\n[1] 单元级：检测器对已知坏样本必须命中")
     cl = load_gate()
 
-    name_hits = [h for h in cl.check_names([".env.canary-123", "proxies.txt",
-                                            "node.key", ".env.example"])]
+    name_hits = [
+        h for h in cl.check_names([".env.canary-123", "proxies.txt", "node.key", ".env.example"])
+    ]
     hit_names = {h[0] for h in name_hits}
     check("文件名校验：.env.canary-123 被拦", ".env.canary-123" in hit_names)
     check("文件名校验：proxies.txt 被拦", "proxies.txt" in hit_names)
     check("文件名校验：node.key 被拦", "node.key" in hit_names)
-    check("文件名校验：.env.example **不**被拦（例外行）",
-          ".env.example" not in hit_names)
+    check("文件名校验：.env.example **不**被拦（例外行）", ".env.example" not in hit_names)
 
     content_hits = cl.check_content("notes.txt", BAD_TEXT, [])
     whys = " | ".join(w for _r, w, _l in content_hits)
@@ -149,32 +163,39 @@ def main() -> int:
     check("内容校验：绝对路径被拦", "绝对路径" in whys)
 
     clean_hits = cl.check_content("notes.txt", CLEAN_TEXT, [])
-    check("内容校验：占位符 / 文档段**不**误报", not clean_hits,
-          f"误报 {len(clean_hits)} 条：{[w for _r, w, _l in clean_hits]}")
+    check(
+        "内容校验：占位符 / 文档段**不**误报",
+        not clean_hits,
+        f"误报 {len(clean_hits)} 条：{[w for _r, w, _l in clean_hits]}",
+    )
 
     # ── [2] 变异验证：把检测器改坏，断言必须变红 ───────────────────
     # 这一步证明 [1] 的断言真的在考察那个检测器，而不是空转。
     print("\n[2] 变异验证：故意改坏检测器，对应断言必须失效")
     cl2 = load_gate()
-    cl2.IPV4_RE = re.compile(r"(?!x)x")          # 永不匹配
+    cl2.IPV4_RE = re.compile(r"(?!x)x")  # 永不匹配
     mut_hits = cl2.check_content("notes.txt", BAD_TEXT, [])
     mut_whys = " | ".join(w for _r, w, _l in mut_hits)
-    check("改坏 IPV4_RE 后，IPv4 命中消失（证明该断言有效）",
-          "IPv4" not in mut_whys)
+    check("改坏 IPV4_RE 后，IPv4 命中消失（证明该断言有效）", "IPv4" not in mut_whys)
 
     cl3 = load_gate()
     cl3.BLOCKED_NAME_RE = re.compile(r"(?!x)x")
-    check("改坏 BLOCKED_NAME_RE 后，文件名命中消失（证明该断言有效）",
-          not cl3.check_names([".env.canary-123"]))
+    check(
+        "改坏 BLOCKED_NAME_RE 后，文件名命中消失（证明该断言有效）",
+        not cl3.check_names([".env.canary-123"]),
+    )
 
     # ── [3] 端到端：坏样本仓库必须被拦且点名 ───────────────────────
     print("\n[3] 端到端（变异）：含坏样本的仓库必须非 0 退出并点名")
     tmp = Path(tempfile.mkdtemp(prefix="irt-gate-bad-"))
     try:
-        make_repo(tmp, {
-            "notes.txt": BAD_TEXT,                    # 内容向量
-            ".env.canary-9f3a": "IR_X=whatever\n",    # 文件名向量
-        })
+        make_repo(
+            tmp,
+            {
+                "notes.txt": BAD_TEXT,  # 内容向量
+                ".env.canary-9f3a": "IR_X=whatever\n",  # 文件名向量
+            },
+        )
         rc, out = run_gate(tmp, "--all")
         check("坏样本仓库：退出码非 0", rc != 0, f"实际 {rc}")
         check("坏样本仓库：输出点名了 notes.txt", "notes.txt" in out)

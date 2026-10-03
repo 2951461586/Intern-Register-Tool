@@ -73,7 +73,8 @@ def set_root(p) -> None:
 #    而真正决定出货与否的是 .gitignore 那层。
 #
 # 🔴 用**家族正则**，不枚举后缀：`.bak-<描述>` / `.old` / `.save.1` 是不收敛的。
-BLOCKED_NAME_RE = re.compile(r"""
+BLOCKED_NAME_RE = re.compile(
+    r"""
       ^\.env(\.|$)                  # .env / .env.<任何>
     | \.bak($|[.\-])                # .bak / .bak-x / .bak.1
     | \.old$ | \.orig$ | \.rej$
@@ -83,7 +84,9 @@ BLOCKED_NAME_RE = re.compile(r"""
     | ^proxies\.txt | ^slots\.txt | _proxies\.txt$
     | \.log($|\.)
     | ^mihomo.*\.ya?ml$ | ^config\.yaml
-""", re.X)
+""",
+    re.X,
+)
 
 # 例外：这些名字长得像禁用家族，但是**必须入库**的模板。
 ALLOWED_NAMES = {".env.example"}
@@ -94,11 +97,22 @@ ALLOWED_NAMES = {".env.example"}
 # ═══════════════════════════════════════════════════════════════════
 # 放行的网段（RFC 5737 文档段 / RFC 1918 私网 / 回环 / 链路本地 / 保留）
 ALLOW_NETS = [
-    ipaddress.ip_network(n) for n in (
-        "0.0.0.0/8", "10.0.0.0/8", "100.64.0.0/10", "127.0.0.0/8",
-        "169.254.0.0/16", "172.16.0.0/12", "192.0.0.0/24", "192.0.2.0/24",
-        "192.168.0.0/16", "198.18.0.0/15", "198.51.100.0/24",
-        "203.0.113.0/24", "224.0.0.0/4", "240.0.0.0/4",
+    ipaddress.ip_network(n)
+    for n in (
+        "0.0.0.0/8",
+        "10.0.0.0/8",
+        "100.64.0.0/10",
+        "127.0.0.0/8",
+        "169.254.0.0/16",
+        "172.16.0.0/12",
+        "192.0.0.0/24",
+        "192.0.2.0/24",
+        "192.168.0.0/16",
+        "198.18.0.0/15",
+        "198.51.100.0/24",
+        "203.0.113.0/24",
+        "224.0.0.0/4",
+        "240.0.0.0/4",
     )
 ]
 # 单独放行的**公共**地址：出现在文档里但没有任何标识性
@@ -106,35 +120,49 @@ ALLOW_NETS = [
 #  1.2.3.4 / 5.6.7.8  惯例占位
 #  152.0.0.0          Chrome UA 里的版本串（Chrome/152.0.0.0）
 #  131.0.0.0          README 里讲 CIDR 时的示例
-ALLOW_IP_EXACT = {"1.1.1.1", "2.2.2.2", "8.8.8.8", "1.2.3.4", "5.6.7.8",
-                  "152.0.0.0", "131.0.0.0"}
+ALLOW_IP_EXACT = {"1.1.1.1", "2.2.2.2", "8.8.8.8", "1.2.3.4", "5.6.7.8", "152.0.0.0", "131.0.0.0"}
 
 # 凭据里的占位词 —— `host:port:USERNAME:PASSWORD` 这种文档写法不该报
 ALLOW_CRED_PARTS = {
-    "username", "password", "user", "pass", "user1", "pass1", "xxxx",
-    "your-user", "your-pass", "userid", "secret", "token", "placeholder",
+    "username",
+    "password",
+    "user",
+    "pass",
+    "user1",
+    "pass1",
+    "xxxx",
+    "your-user",
+    "your-pass",
+    "userid",
+    "secret",
+    "token",
+    "placeholder",
 }
 
 IPV4_RE = re.compile(r"(?<![\d.])((?:\d{1,3}\.){3}\d{1,3})(?![\d.])")
 # host:port:user:pass —— 端口必须是数字，否则文档里的 `host:port:user:pass` 会误报
 CRED_RE = re.compile(
     r"\b([A-Za-z0-9][A-Za-z0-9.\-]{3,}):(\d{2,5}):"
-    r"([A-Za-z0-9._\-]{4,}):([A-Za-z0-9._\-]{4,})\b")
+    r"([A-Za-z0-9._\-]{4,}):([A-Za-z0-9._\-]{4,})\b"
+)
 TOKEN_RE = re.compile(
-    r"\b(cfat_[A-Za-z0-9]{16,}"          # Cloudflare API Token
-    r"|ghp_[A-Za-z0-9]{20,}"             # GitHub 经典 PAT
-    r"|ghu_[A-Za-z0-9]{20,}"             # GitHub 细粒度令牌
+    r"\b(cfat_[A-Za-z0-9]{16,}"  # Cloudflare API Token
+    r"|ghp_[A-Za-z0-9]{20,}"  # GitHub 经典 PAT
+    r"|ghu_[A-Za-z0-9]{20,}"  # GitHub 细粒度令牌
     r"|github_pat_[A-Za-z0-9_]{20,}"
-    r"|sk-[A-Za-z0-9]{20,}"              # OpenAI 风格
-    r"|AKIA[0-9A-Z]{16}"                 # AWS
-    r"|xox[baprs]-[A-Za-z0-9\-]{10,}"    # Slack
-    r")\b")
+    r"|sk-[A-Za-z0-9]{20,}"  # OpenAI 风格
+    r"|AKIA[0-9A-Z]{16}"  # AWS
+    r"|xox[baprs]-[A-Za-z0-9\-]{10,}"  # Slack
+    r")\b"
+)
 # 实例子域（`<...>` 占位不算）
 WORKER_HOST_RE = re.compile(r"\b([a-z0-9][a-z0-9\-]{1,62})\.workers\.dev\b")
 # 本机绝对路径：Windows 盘符 / macOS / Linux home
-ABS_PATH_RE = re.compile(r"(?:\b[A-Za-z]:[\\/](?:Users|IDE|epsoft|tools|dev|code)\b"
-                         r"|/Users/[A-Za-z0-9._-]+/"
-                         r"|/home/[A-Za-z0-9._-]+/)")
+ABS_PATH_RE = re.compile(
+    r"(?:\b[A-Za-z]:[\\/](?:Users|IDE|epsoft|tools|dev|code)\b"
+    r"|/Users/[A-Za-z0-9._-]+/"
+    r"|/home/[A-Za-z0-9._-]+/)"
+)
 # 高熵串（只用于数据类文件）
 HIGH_ENTROPY_RE = re.compile(r"[A-Za-z0-9+/=_\-]{28,}")
 # 数据类文件 —— 第 2 层只扫这些
@@ -142,9 +170,30 @@ DATA_SUFFIXES = {".json", ".jsonl", ".log", ".txt", ".csv", ".env", ".yaml", ".y
 
 # 二进制后缀：直接跳过（内容层）
 BINARY_SUFFIXES = {
-    ".png", ".jpg", ".jpeg", ".gif", ".ico", ".pdf", ".zip", ".gz", ".tar",
-    ".exe", ".dll", ".so", ".dylib", ".woff", ".woff2", ".ttf", ".otf",
-    ".pyc", ".pyo", ".class", ".jar", ".mp4", ".mp3", ".webp",
+    ".png",
+    ".jpg",
+    ".jpeg",
+    ".gif",
+    ".ico",
+    ".pdf",
+    ".zip",
+    ".gz",
+    ".tar",
+    ".exe",
+    ".dll",
+    ".so",
+    ".dylib",
+    ".woff",
+    ".woff2",
+    ".ttf",
+    ".otf",
+    ".pyc",
+    ".pyo",
+    ".class",
+    ".jar",
+    ".mp4",
+    ".mp3",
+    ".webp",
 }
 
 
@@ -154,6 +203,7 @@ def _entropy(s: str) -> float:
         return 0.0
     from collections import Counter
     from math import log2
+
     n = len(s)
     return -sum((c / n) * log2(c / n) for c in Counter(s).values())
 
@@ -164,7 +214,7 @@ def _ip_allowed(ip: str) -> bool:
     try:
         a = ipaddress.ip_address(ip)
     except ValueError:
-        return True                      # 不是合法 IP（如 999.1.1.1）→ 不算
+        return True  # 不是合法 IP（如 999.1.1.1）→ 不算
     return any(a in net for net in ALLOW_NETS)
 
 
@@ -177,7 +227,8 @@ def _ip_allowed(ip: str) -> bool:
 BENIGN_KEY_RE = re.compile(
     r"(_FILE|_PATH|_STATE|_COOLDOWN|_TIMEOUT|_MAX|_WINDOW|_INTERVAL|_LIMIT"
     r"|_DELAY|_BUDGET|_PREFLIGHT|_MICRO|_NO_|_LO$|_HI$"
-    r"|SOURCE|SLOTS$|CHROME_PATH|CLIENT_ID)")
+    r"|SOURCE|SLOTS$|CHROME_PATH|CLIENT_ID)"
+)
 
 
 def _looks_like_path(s: str) -> bool:
@@ -233,8 +284,14 @@ def _git(*args):
     #
     # ⚠ 刻意不再收 `text` 形参：git 输出一律按文本处理（旧签名里的 `text=False`
     #   分支全仓无调用者 —— 已 grep 确认）。
-    p = subprocess.run(["git", *args], cwd=str(ROOT), capture_output=True,
-                       text=True, encoding="utf-8", errors="replace")
+    p = subprocess.run(
+        ["git", *args],
+        cwd=str(ROOT),
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
     return p.returncode, (p.stdout or "")
 
 
@@ -283,25 +340,38 @@ def check_ignore_canaries() -> list:
     """
     hits = []
     must_ignore = [
-        ".env", ".env.local", ".env.bak-20260918-110124", ".env.old",
-        "results.json.bak-x", "proxies.txt", "slots.txt.bak",
-        ".workbuddy-ai/proxypool/slots.txt", ".workbuddy-ai/tmp/batch.log",
-        "node.key", "client.pem", "mihomo-slots.yaml", "config.yaml.bak",
+        ".env",
+        ".env.local",
+        ".env.bak-20260918-110124",
+        ".env.old",
+        "results.json.bak-x",
+        "proxies.txt",
+        "slots.txt.bak",
+        ".workbuddy-ai/proxypool/slots.txt",
+        ".workbuddy-ai/tmp/batch.log",
+        "node.key",
+        "client.pem",
+        "mihomo-slots.yaml",
+        "config.yaml.bak",
     ]
-    p = subprocess.run(["git", "check-ignore", "--stdin"], cwd=str(ROOT),
-                       # 🔴 必须传 **bytes**，不能用 `input=<str>` + `text=True`：
-                       #    Windows 上 text 模式会给 stdin 套 TextIOWrapper(newline=None)，
-                       #    把 `\n` 翻成 `\r\n` ⇒ git 收到的路径变成 `.env\r` ⇒ 一条都不匹配
-                       #    ⇒ 守卫静默变成"全部放行"。实测踩到过（13/13 假报）。
-                       input="\n".join(must_ignore).encode("utf-8"),
-                       capture_output=True)
+    p = subprocess.run(
+        ["git", "check-ignore", "--stdin"],
+        cwd=str(ROOT),
+        # 🔴 必须传 **bytes**，不能用 `input=<str>` + `text=True`：
+        #    Windows 上 text 模式会给 stdin 套 TextIOWrapper(newline=None)，
+        #    把 `\n` 翻成 `\r\n` ⇒ git 收到的路径变成 `.env\r` ⇒ 一条都不匹配
+        #    ⇒ 守卫静默变成"全部放行"。实测踩到过（13/13 假报）。
+        input="\n".join(must_ignore).encode("utf-8"),
+        capture_output=True,
+    )
     ignored = set(p.stdout.decode("utf-8", "replace").split())
     for f in must_ignore:
         if f not in ignored:
             hits.append(("<.gitignore>", f".gitignore 放行了本该拒绝的文件：{f}", ""))
     # 反查：模板必须**不**被忽略
-    p2 = subprocess.run(["git", "check-ignore", "-q", ".env.example"],
-                        cwd=str(ROOT), capture_output=True)
+    p2 = subprocess.run(
+        ["git", "check-ignore", "-q", ".env.example"], cwd=str(ROOT), capture_output=True
+    )
     if p2.returncode == 0:
         hits.append(("<.gitignore>", ".env.example 被误伤（例外行丢了？）", ""))
     return hits
@@ -324,20 +394,29 @@ def check_content(rel: str, text: str, env_patterns: list) -> list:
             continue
         if host.lower() in ALLOW_CRED_PARTS:
             continue
-        hits.append((rel, f"疑似 `host:port:user:pass` 凭据（host={host} port={port}）",
-                     _line_of(text, m.start())))
+        hits.append(
+            (
+                rel,
+                f"疑似 `host:port:user:pass` 凭据（host={host} port={port}）",
+                _line_of(text, m.start()),
+            )
+        )
 
     for m in TOKEN_RE.finditer(text):
         # 只报前缀类别，不回显值
         hits.append((rel, f"疑似令牌（前缀 {m.group(1)[:5]}…）", _line_of(text, m.start())))
 
     for m in WORKER_HOST_RE.finditer(text):
-        hits.append((rel, f"实例 workers.dev 子域：{m.group(1)[:4]}…（应写 <your-subdomain>）",
-                     _line_of(text, m.start())))
+        hits.append(
+            (
+                rel,
+                f"实例 workers.dev 子域：{m.group(1)[:4]}…（应写 <your-subdomain>）",
+                _line_of(text, m.start()),
+            )
+        )
 
     for m in ABS_PATH_RE.finditer(text):
-        hits.append((rel, "本机绝对路径（暴露目录结构 / 项目代号）",
-                     _line_of(text, m.start())))
+        hits.append((rel, "本机绝对路径（暴露目录结构 / 项目代号）", _line_of(text, m.start())))
 
     # ── 项目自带模式（来自 .env 的真实值）──────────────────────────
     for label, val in env_patterns:
@@ -349,8 +428,7 @@ def check_content(rel: str, text: str, env_patterns: list) -> list:
         for m in HIGH_ENTROPY_RE.finditer(text):
             s = m.group(0)
             if _entropy(s) > 4.2:
-                hits.append((rel, f"高熵串（长度 {len(s)}，疑似密钥）",
-                             _line_of(text, m.start())))
+                hits.append((rel, f"高熵串（长度 {len(s)}，疑似密钥）", _line_of(text, m.start())))
     return hits
 
 
@@ -367,7 +445,7 @@ def scan_file(rel: str, env_patterns: list) -> list:
     try:
         text = p.read_text(encoding="utf-8", errors="strict")
     except (UnicodeDecodeError, OSError):
-        return []                       # 二进制 / 读不了 → 跳过（内容层）
+        return []  # 二进制 / 读不了 → 跳过（内容层）
     return check_content(rel, text, env_patterns)
 
 
@@ -432,21 +510,18 @@ def _force_utf8_streams() -> None:
         enc = (getattr(stream, "encoding", "") or "").lower().replace("-", "")
         if enc == "utf8":
             continue
-        setattr(sys, name, io.TextIOWrapper(buf, encoding="utf-8",
-                                            errors="replace"))
+        setattr(sys, name, io.TextIOWrapper(buf, encoding="utf-8", errors="replace"))
 
 
 def main() -> int:
     _force_utf8_streams()
-    ap = argparse.ArgumentParser(
-        description="提交前泄漏闸门：拦住凭据与风控标识入库")
+    ap = argparse.ArgumentParser(description="提交前泄漏闸门：拦住凭据与风控标识入库")
     g = ap.add_mutually_exclusive_group()
     g.add_argument("--staged", action="store_true", help="只查暂存区（pre-commit 用）")
     g.add_argument("--all", action="store_true", help="查工作区全部文件（含被忽略的）")
     ap.add_argument("--history", action="store_true", help="连全部 git 历史一起扫")
     ap.add_argument("--quiet", action="store_true", help="只输出结论")
-    ap.add_argument("--root", default="",
-                    help="覆盖扫描根（仅供自检用；默认=本脚本所在仓库根）")
+    ap.add_argument("--root", default="", help="覆盖扫描根（仅供自检用；默认=本脚本所在仓库根）")
     args = ap.parse_args()
 
     if args.root:
@@ -461,9 +536,11 @@ def main() -> int:
     env_patterns = load_env_patterns()
 
     if not args.quiet:
-        print(f"🔍 泄漏闸门：模式={mode}，待查 {len(rels)} 个文件"
-              f"，项目自带模式 {len(env_patterns)} 条"
-              f"（来自 .env，值不显示）")
+        print(
+            f"🔍 泄漏闸门：模式={mode}，待查 {len(rels)} 个文件"
+            f"，项目自带模式 {len(env_patterns)} 条"
+            f"（来自 .env，值不显示）"
+        )
 
     hits = []
     hits += check_names(rels)
@@ -484,8 +561,10 @@ def main() -> int:
     for rel, why, line in hits:
         loc = f"{rel}:{line}" if line else rel
         print(f"  {loc}\n      {why}")
-    print("\n修法：值改从 .env 读（默认空），文档里的值换成占位符"
-          "（见 docs/security-conventions.md）。")
+    print(
+        "\n修法：值改从 .env 读（默认空），文档里的值换成占位符"
+        "（见 docs/security-conventions.md）。"
+    )
     print("⚠ 不要用 --no-verify 绕过 —— 那正是上一次泄漏发生的方式。")
     return 1
 
