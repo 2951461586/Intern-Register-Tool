@@ -48,9 +48,9 @@ from pathlib import Path
 from _path import ROOT  # noqa: F401  （副作用：把 tools/ 与仓库根加进 sys.path）
 
 from src import config, ledger  # noqa: E402
+from src.mailbox import MailboxSource, make_source  # noqa: E402
 from src.proxypool import build_pool  # noqa: E402
 from src.sso import SSOClient  # noqa: E402
-from src.tempmail import TempMailClient  # noqa: E402
 
 
 def is_activation_failure(rec: dict) -> bool:
@@ -77,7 +77,7 @@ def pick_from_ledger(path: Path) -> list[str]:
     return out
 
 
-def recover_one(mail: TempMailClient, email: str, *, proxy: str = None,
+def recover_one(mail: MailboxSource, email: str, *, proxy: str = None,
                 timeout: int = 120, log=print) -> dict:
     """救一个账号。返回 `{"email", "verdict", "detail"}`。"""
     t0 = time.time()
@@ -161,7 +161,7 @@ def main() -> int:
     else:
         print("\n（未启用槽位池，走全局 IR_PROXY / 直连）")
 
-    mail = TempMailClient()
+    mail = make_source()
     results = []
     print()
     for i, email in enumerate(targets, 1):

@@ -37,6 +37,7 @@ r"""提交前泄漏闸门 —— 命中即非 0 退出，用来在**入库之前
 """
 
 import argparse
+import io
 import ipaddress
 import re
 import subprocess
@@ -225,9 +226,15 @@ def load_env_patterns() -> list:
 # ═══════════════════════════════════════════════════════════════════
 # 四、收集待查文件
 # ═══════════════════════════════════════════════════════════════════
-def _git(*args, text=True):
-    p = subprocess.run(["git", *args], cwd=str(ROOT),
-                       capture_output=True, text=text)
+def _git(*args):
+    # 🔴 必须显式钉 `encoding`：只给 `text=True` 而不给 encoding 时，subprocess
+    #    会按**本机区域编码**解码 git 输出（Windows 中文机 = gbk）；遇到非该编码的
+    #    路径/内容会在 subprocess 的读线程里抛 UnicodeDecodeError（`--history` 实测踩到）。
+    #
+    # ⚠ 刻意不再收 `text` 形参：git 输出一律按文本处理（旧签名里的 `text=False`
+    #   分支全仓无调用者 —— 已 grep 确认）。
+    p = subprocess.run(["git", *args], cwd=str(ROOT), capture_output=True,
+                       text=True, encoding="utf-8", errors="replace")
     return p.returncode, (p.stdout or "")
 
 
@@ -405,7 +412,32 @@ def scan_history() -> list:
 
 
 # ═══════════════════════════════════════════════════════════════════
+def _force_utf8_streams() -> None:
+    """把 stdout/stderr 钉成 UTF-8（Windows 中文控制台默认 GBK）。
+
+    🔴 为什么放在 `main()` 里、而**不是**模块级：
+       `tools/gates/selftest_check_leaks.py` 用 `importlib` 在**同一个进程里
+       多次**加载本模块（正常 + 变异体 ×2）。模块级重包 `sys.stdout` 时，
+       上一个 `TextIOWrapper` 会被 GC 并**关掉底层 buffer** ⇒ 第二次加载后
+       一打印就 `ValueError: I/O operation on closed file` / `lost sys.stderr`
+       （实测踩到）。放进 `main()` 后，只有真正执行的入口才动 stdout。
+
+    已经是 UTF-8 时不重复包（同一个关闭坑）。
+    """
+    for name in ("stdout", "stderr"):
+        stream = getattr(sys, name)
+        buf = getattr(stream, "buffer", None)
+        if buf is None:
+            continue
+        enc = (getattr(stream, "encoding", "") or "").lower().replace("-", "")
+        if enc == "utf8":
+            continue
+        setattr(sys, name, io.TextIOWrapper(buf, encoding="utf-8",
+                                            errors="replace"))
+
+
 def main() -> int:
+    _force_utf8_streams()
     ap = argparse.ArgumentParser(
         description="提交前泄漏闸门：拦住凭据与风控标识入库")
     g = ap.add_mutually_exclusive_group()

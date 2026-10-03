@@ -43,9 +43,9 @@ from dataclasses import asdict, dataclass, field
 
 from . import config, quota
 from .discovery import DiscoveryClient
+from .mailbox import MailboxSource, make_source
 from .proxypool import NoEligibleSlot, build_pool
 from .sso import SSOClient
-from .tempmail import TempMailClient
 
 # 注册阶段的并发度。纯 HTTP，可以给得比浏览器侧高。
 # 注意：并发度 ≠ 注册速率 —— 速率由下面的 REG_MIN_INTERVAL 闸门控制。
@@ -420,7 +420,7 @@ class AccountRecord:
 # ────────────────────────────────────────────────────────────────
 # Stage 1+2：建邮箱 → 注册 → 收信激活（纯 HTTP）
 # ────────────────────────────────────────────────────────────────
-def stage_register(mail: TempMailClient, sso: SSOClient, rec: AccountRecord,
+def stage_register(mail: MailboxSource, sso: SSOClient, rec: AccountRecord,
                    *, mail_domain: str = None, log=print, gate=None,
                    should_stop=None, quota_scope: str = "") -> bool:
     """gate: 可选的限速闸门（callable）。在真正调用 register/byEmail 前触发，
@@ -726,7 +726,7 @@ def run_one(*, headless: bool = True, key_name: str = "default",
             print(f"    {msg}", flush=True)
 
     t0 = time.time()
-    mail, sso = TempMailClient(), SSOClient()
+    mail, sso = make_source(), SSOClient()
     if not stage_register(mail, sso, rec, mail_domain=mail_domain, log=log):
         return rec
 
@@ -941,7 +941,7 @@ def run_batch(*, count: int, workers: int = 2, headless: bool = True,
                     rec.error = why
                     rec.error_kind = ERR_QUOTA_GUARD
                     return
-            mail = TempMailClient()
+            mail = make_source()
             # 🔴 proxy 必须传**具体值**给这个 client，不能改全局 `IR_PROXY` ——
             #    多个 producer 同时改全局会互相踩（见 config.apply_proxy）。
             sso = SSOClient(proxy=(lease.url if lease else None))

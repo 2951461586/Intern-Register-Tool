@@ -35,11 +35,84 @@ def _load_dotenv(path: Path) -> None:
 
 _load_dotenv(Path(__file__).resolve().parents[1] / ".env")
 
-# ── CF Worker 临时邮箱 ────────────────────────────────────────────
+# ── 邮箱源选择（可插拔，见 src/mailbox.py）─────────────────────────
+# 🔴 默认 `worker` ⇒ 与引入这个开关之前**行为完全一致**（`validate()` 里
+#    走的还是下面那三条检查，一个字都没变）。换源必须是**显式动作**。
+#
+# 为什么要可插拔（2026-09-23 实测）：整链有两道互相独立的坎，而**没有
+# 任何一个邮箱源同时过得了** ——
+#   · 本项目 CF Worker 自有域名：过不了域名门（`A0232`），但读信是现成的
+#   · gmail / outlook / qq / 定制域名：过得去域名门，但读信要 app password
+# 于是「域名门不合格就换源、读信不通就换源」，而 `stage_register` 不用改。
+MAILBOX_KIND = os.getenv("IR_MAILBOX_KIND", "worker").strip().lower() or "worker"
+# 唯一真源：`validate()` 与 `mailbox.make_source()` 都从这里取，
+# 避免"校验认得的取值"和"工厂认得的取值"各写一份然后漂移
+# （`tests/test_mailbox.py` 钉住了两者相等）。
+# ⚠ 刻意**不做别名**（不认 `cf` / `gmail` 之类）：别名会让
+#   `IR_MAILBOX_KIND=gmail` 看起来像"换了个源"，其实只是换了个写法。
+MAILBOX_KINDS = ("worker", "imap", "chatai", "remail")
+
+# ── CF Worker 临时邮箱（MAILBOX_KIND=worker 时必填）───────────────
 WORKER_BASE = os.getenv("IR_WORKER_BASE", "")
 # ⚠ 默认留空。缺它时由 `validate()` 在入口处报错，而不是静默发一堆 401。
 WORKER_ADMIN_TOKEN = os.getenv("IR_WORKER_ADMIN_TOKEN", "")
 WORKER_DOMAIN = os.getenv("IR_WORKER_DOMAIN", "")
+
+# ── IMAP 邮箱源（MAILBOX_KIND=imap 时必填凭据）────────────────────
+# 凭据文件每行 `邮箱----密码`（第三段「恢复邮箱」可有可无）。**不进仓库**，
+# 所以这里默认空、由 `validate()` 在入口报错 —— 与 `IR_WORKER_BASE` 同理。
+IMAP_CREDENTIALS = os.getenv("IR_IMAP_CREDENTIALS", "").strip()
+# 🟢 主机名是公开常识、不含凭据，所以给默认值。Gmail 的 IMAP 入口固定为
+#    `imap.gmail.com:993`（SSL）。供应商给的是定制域名邮箱时，其邮件多半
+#    也托管在 Google（MX 指向 smtp.google.com），此时这个默认值照样对。
+IMAP_HOST = os.getenv("IR_IMAP_HOST", "imap.gmail.com").strip() or "imap.gmail.com"
+IMAP_PORT = int(os.getenv("IR_IMAP_PORT", "993") or 993)
+IMAP_FOLDER = os.getenv("IR_IMAP_FOLDER", "INBOX").strip() or "INBOX"
+# 单次 IMAP 操作的超时（秒）。比 `REQUEST_TIMEOUT` 略长：登录 + SEARCH +
+# FETCH 是三次往返，而 `imaplib` 的超时是**每次 socket 操作**的，不是总时长。
+IMAP_TIMEOUT = float(os.getenv("IR_IMAP_TIMEOUT", "30") or 30)
+# ⚠ 「已领用」状态文件路径用 `IR_IMAP_USED_STATE` 覆盖，但**不在这里定值** ——
+#    它由 `mailbox.used_state_path()` 在**调用时**读环境变量（与
+#    `quota.state_path()` 同一个约定），这样自检脚本能隔离它。
+
+# ── chatai.codes 读信页（MAILBOX_KIND=chatai 时必填账号文件）──────
+# 供应商给的 outlook 账号池，每行 `邮箱----密码----clientId----refreshToken`。
+# **不进仓库**，所以默认空、由 `validate()` 在入口报错 —— 与 IMAP 同理。
+CHATAI_ACCOUNTS = os.getenv("IR_CHATAI_ACCOUNTS", "").strip()
+# 读信页地址。公开服务、不含凭据，所以给默认值。
+CHATAI_BASE = os.getenv("IR_CHATAI_BASE", "").strip() or "https://mail.chatai.codes"
+# 单次读信请求超时（秒）。读信页要替我们换 Microsoft access_token 再拉
+# Graph，比 `REQUEST_TIMEOUT` 长得多：实测一次 fetch-graph 约 1~3s，
+# 但首次（含 refresh_token 交换）可能 10s 以上。
+CHATAI_TIMEOUT = float(os.getenv("IR_CHATAI_TIMEOUT", "60") or 60)
+# ⚠ 「已领用 / 已失效」状态文件路径用 `IR_CHATAI_STATE` 覆盖，但**不在这里
+#    定值** —— 与 IMAP 同一个约定，由 `mailbox.chatai_state_path()` 在调用时读。
+
+# ── Remail 接码平台（MAILBOX_KIND=remail 时必填 API Key）──────────
+# 平台：https://remail.aishop6.com 。按**订单**买邮箱，取件走 `/v1/pickup`。
+# 🔴 权威文档是 `/openapi.json`（OpenAPI 3.0.3）—— `/docs` 只是 814 B 的
+#    SPA 空壳，抓它会以为站点没文档（2026-09-24 踩过）。
+# **凭据不进仓库**，默认空、由 `validate()` 在入口报错。
+REMAIL_API_KEY = os.getenv("IR_REMAIL_API_KEY", "").strip()
+# 🔴 **必须指向带目标站邮件规则的私有项目**。默认 170 = OpenXLab
+#    （accessType=private，mailRuleCount=4，platform=sso.openxlab.org.cn）。
+#    2026-09-24 实测：用 chatgpt(pid=2) / 通用接码(pid=73) 下单，pickup 恒
+#    `items=[]` —— 那些公共项目没有 OpenXLab 邮件规则，邮件根本不会被抓。
+REMAIL_PROJECT_ID = int(os.getenv("IR_REMAIL_PROJECT_ID", "170") or 170)
+# 下单的邮箱后缀。outlook.com 实测**过 OpenXLab 域名门**（A0232 的反面）。
+REMAIL_SUFFIX = os.getenv("IR_REMAIL_SUFFIX", "outlook.com").strip() or "outlook.com"
+# 供给策略。**服务端默认就是 private_first**：先用自有库存，无货回退公共。
+# 🔴 不要改回 public_only —— 09-24 那版脚本写死了它，是当时取件失败的
+#    混杂因素之一。
+REMAIL_SUPPLY = os.getenv("IR_REMAIL_SUPPLY", "private_first").strip() or "private_first"
+# 服务模式：purchase=长效购买（10 积分/个，60min 收信窗口），code=短效接码。
+# 用 purchase —— 我们要的是能收激活邮件的长效地址。
+REMAIL_SERVICE_MODE = os.getenv("IR_REMAIL_SERVICE_MODE", "purchase").strip() or "purchase"
+# 平台地址。公开服务、不含凭据，所以给默认值。
+REMAIL_BASE = os.getenv("IR_REMAIL_BASE", "").strip() or "https://remail.aishop6.com"
+# 单次 API 请求超时（秒）。
+REMAIL_TIMEOUT = float(os.getenv("IR_REMAIL_TIMEOUT", "60") or 60)
+
 
 # ── OpenXLab SSO ─────────────────────────────────────────────────
 SSO_BASE = "https://sso.openxlab.org.cn"
@@ -72,9 +145,7 @@ DISCOVERY_API = f"{DISCOVERY_BASE}/api"
 # 🔴 别用 chat.intern-ai.org.cn —— 那是网页版聊天后端，只认 SSO JWT，
 #    且要求账号绑定手机号（-20035），拿 sk- key 打会得到 401 A0211。
 #    真正接受 sk- key 的是下面这个主机，路径前缀 /v1（OpenAI 兼容）。
-CHAT_API_BASE = os.getenv(
-    "IR_CHAT_API_BASE", "https://discovery-api.intern-ai.org.cn/v1"
-)
+CHAT_API_BASE = os.getenv("IR_CHAT_API_BASE", "https://discovery-api.intern-ai.org.cn/v1")
 
 # TokenPlan 可用模型（2026-09-15 实测，来自 GET /v1/models）
 # ⚠ intern-s1 不在其中，用它会得到 model_not_available
@@ -107,8 +178,8 @@ CHAT_MODELS = [
 # ── 行为参数 ──────────────────────────────────────────────────────
 # 邮件实测在注册后 3 秒内到达；轮询间隔 0.8s 可在 1~2 次内命中，
 # 而收信接口单次往返 ~600ms，再密就只是在打 Cloudflare。
-MAIL_POLL_INTERVAL = 0.8    # 秒
-MAIL_POLL_TIMEOUT = 120     # 秒
+MAIL_POLL_INTERVAL = 0.8  # 秒
+MAIL_POLL_TIMEOUT = 120  # 秒
 #
 # 🔴 2026-09-19 改造：收信改走 `/api/inbox?email=`，**不再走 `/admin/all`**。
 #
@@ -125,8 +196,8 @@ MAIL_POLL_TIMEOUT = 120     # 秒
 #   下面这两个常量现在**只服务于向后兼容**（`list_mails()` 不传 email 时的
 #   退回路径）。收信主路径已经不需要"窗口开多大"这个折中了 ——
 #   索引查询只返回这一个收件人的邮件。
-MAIL_LIST_LIMIT = 50        # 仅退回路径用（`list_mails()` 不传 email 时的默认 limit）
-REQUEST_TIMEOUT = 30        # 秒
+MAIL_LIST_LIMIT = 50  # 仅退回路径用（`list_mails()` 不传 email 时的默认 limit）
+REQUEST_TIMEOUT = 30  # 秒
 
 USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -134,9 +205,7 @@ USER_AGENT = (
 )
 
 # 本机 Chrome（Playwright 驱动，避免下载额外浏览器）
-CHROME_PATH = os.getenv(
-    "IR_CHROME_PATH", r"C:\Program Files\Google\Chrome\Application\chrome.exe"
-)
+CHROME_PATH = os.getenv("IR_CHROME_PATH", r"C:\Program Files\Google\Chrome\Application\chrome.exe")
 
 
 # ── 注册配额保护（本地累计计数）───────────────────────────────────
@@ -224,8 +293,12 @@ IR_PROXY_SLOT_TIMEOUT = float(os.getenv("IR_PROXY_SLOT_TIMEOUT", "240") or 240)
 #    那种状态下每条注册记录都会以**代理连接错误**收场，而在这个项目里
 #    "注册全失败"最容易被误读成"换 IP 也不行 / 还在封" —— 结论完全错。
 #    6 个本地端口的 TCP 连通检查是毫秒级的，代价可以忽略。
-IR_PROXY_PREFLIGHT = os.getenv("IR_PROXY_PREFLIGHT", "1").strip().lower() \
-    not in ("0", "false", "no", "off")
+IR_PROXY_PREFLIGHT = os.getenv("IR_PROXY_PREFLIGHT", "1").strip().lower() not in (
+    "0",
+    "false",
+    "no",
+    "off",
+)
 
 
 def proxy_slots() -> list[str]:
@@ -314,11 +387,12 @@ def slot_scope(url: str) -> str:
             f"       IR_SLOT_EGRESS_IPS={port}=<那个槽位的出口 IP>\n"
             f"     多个槽位用逗号分隔：7901=1.1.1.1,7902=2.2.2.2\n"
             f"  3) 迁移台账： python tools/data/migrate_quota_scope.py --apply\n"
-            f"  —— 不能退回按槽位号记账：那会静默把配额记到别的 IP 头上。")
+            f"  —— 不能退回按槽位号记账：那会静默把配额记到别的 IP 头上。"
+        )
     return ip
 
 
-def proxies(raw: str = None) -> dict | None:
+def proxies(raw: str | None = None) -> dict | None:
     """把代理串解析成 requests 的 `proxies` 字典；空则返回 `None`。
 
     支持两种写法：
@@ -341,11 +415,12 @@ def proxies(raw: str = None) -> dict | None:
         else:
             raise ValueError(
                 f"代理串格式无法识别：{raw!r}（期望 host:port:user:pass "
-                f"或 scheme://user:pass@host:port）")
+                f"或 scheme://user:pass@host:port）"
+            )
     return {"http": raw, "https": raw}
 
 
-def apply_proxy(session, proxy: str = None) -> None:
+def apply_proxy(session, proxy: str | None = None) -> None:
     """把代理挂到 `requests.Session` 上（未配置则什么都不做）。
 
     `proxy` 传 None 时用全局 `IR_PROXY`；传具体值则只作用于这个 session
@@ -386,16 +461,49 @@ def validate(*, need_worker_token: bool = True) -> list[str]:
 
     刻意**不在 import 时抛错** —— 那样连 `--help` 和离线分析都跑不起来。
     由入口显式调用，报错时直接给出修法。
+
+    🔴 **检查哪几项取决于 `MAILBOX_KIND`** —— 邮箱源可插拔（见
+    `src/mailbox.py`）：IMAP 模式下要求 `IR_WORKER_*` 是没有意义的，
+    反过来也一样。缺项在这里报出来，而不是跑到一半才炸。
+
+    ⚠ 默认 `worker` 时，下面三条检查与引入这个开关之前**逐字相同**。
     """
     missing = []
-    if need_worker_token and not WORKER_ADMIN_TOKEN:
-        missing.append("IR_WORKER_ADMIN_TOKEN")
-    # 这两项不再有写死的默认值（本仓库是公开的），缺失时在入口报错，
-    # 而不是带着空 base 去发一堆注定失败的请求。
-    if not WORKER_BASE:
-        missing.append("IR_WORKER_BASE")
-    if not WORKER_DOMAIN:
-        missing.append("IR_WORKER_DOMAIN")
+    if MAILBOX_KIND == "worker":
+        if need_worker_token and not WORKER_ADMIN_TOKEN:
+            missing.append("IR_WORKER_ADMIN_TOKEN")
+        # 这两项不再有写死的默认值（本仓库是公开的），缺失时在入口报错，
+        # 而不是带着空 base 去发一堆注定失败的请求。
+        if not WORKER_BASE:
+            missing.append("IR_WORKER_BASE")
+        if not WORKER_DOMAIN:
+            missing.append("IR_WORKER_DOMAIN")
+    elif MAILBOX_KIND == "imap":
+        if not IMAP_CREDENTIALS:
+            missing.append("IR_IMAP_CREDENTIALS")
+        elif not Path(IMAP_CREDENTIALS).expanduser().is_file():
+            # 🔴 路径写错是这里最常见的失败，而且**报错点离原因很远**：
+            #    `ImapMailbox` 要到第一个账号领地址时才抛，那时批次已经
+            #    跑了一半。提前到启动阶段报，并指路到正确的格式说明。
+            missing.append(f"IR_IMAP_CREDENTIALS（指向的文件不存在：{IMAP_CREDENTIALS}）")
+    elif MAILBOX_KIND == "chatai":
+        if not CHATAI_ACCOUNTS:
+            missing.append("IR_CHATAI_ACCOUNTS")
+        elif not Path(CHATAI_ACCOUNTS).expanduser().is_file():
+            # 同 IMAP：路径写错是最常见的失败，而且**报错点离原因很远**
+            # —— 要到领第一个账号时才抛，那时批次已经跑了一半。
+            missing.append(f"IR_CHATAI_ACCOUNTS（指向的文件不存在：{CHATAI_ACCOUNTS}）")
+    elif MAILBOX_KIND == "remail":
+        # Remail 不需要本地凭据文件 —— 一切经 `/v1/open/orders` 下单，
+        # 唯一的必填项是 API Key（缺失时会在**下单那一刻**才 401，
+        # 那时批次已过半，所以提前到启动阶段报）。
+        if not REMAIL_API_KEY:
+            missing.append("IR_REMAIL_API_KEY")
+
+    else:
+        missing.append(
+            f"IR_MAILBOX_KIND（未知取值 {MAILBOX_KIND!r}，只认 {' / '.join(MAILBOX_KINDS)}）"
+        )
 
     # 配了槽位池却没给「端口 -> 出口 IP」映射：`slot_scope()` 会在**第一个任务**
     # 才抛错，那时已经跑了一半。提前到启动阶段报，并指路到探测器。
@@ -409,6 +517,6 @@ def validate(*, need_worker_token: bool = True) -> list[str]:
     if has_slots and not SLOT_EGRESS_IPS:
         missing.append(
             "IR_SLOT_EGRESS_IPS（已配槽位池但缺「端口=出口IP」映射；"
-            "先跑 python tools/probes/probe_slots.py 量出来）")
+            "先跑 python tools/probes/probe_slots.py 量出来）"
+        )
     return missing
-

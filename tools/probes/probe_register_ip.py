@@ -87,9 +87,9 @@ def exit_ip(proxy: str, *, timeout: int = 20) -> str:
 def register_once(proxy: str) -> dict:
     """建一个邮箱 + 打一枪 `register/byEmail`。返回结构化结果。"""
     from src import config
+    from src.mailbox import make_source
     from src.pipeline import gen_password, is_quota_block
     from src.sso import SSOClient
-    from src.tempmail import TempMailClient
 
     # 🔴 关键：**必须**在 import 之后改 `config.IR_PROXY` 再建 client，
     #    因为 `SSOClient.__init__` 会调 `config.apply_proxy()`。
@@ -99,7 +99,10 @@ def register_once(proxy: str) -> dict:
 
     out = {"proxy": proxy, "at": time.strftime("%Y-%m-%d %H:%M:%S")}
     try:
-        mail = TempMailClient()
+        # 🔴 走工厂而不是直接 `TempMailClient()` —— 否则 `IR_MAILBOX_KIND=imap`
+        #    时探针仍打 Worker，会给出「探针通过、跑批失败」的**假绿**。
+        #    默认（未配 IR_MAILBOX_KIND）行为与改造前完全一致。
+        mail = make_source()
         emails = mail.create_mailbox(count=1)
         if not emails:
             out["verdict"] = "mailbox_failed"

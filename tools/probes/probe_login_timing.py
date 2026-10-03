@@ -43,9 +43,9 @@ from pathlib import Path
 from _path import ROOT  # noqa: F401  （副作用：把 tools/ 与仓库根加进 sys.path）
 
 from src import browser  # noqa: E402
+from src.mailbox import make_source  # noqa: E402
 from src.pipeline import AccountRecord, stage_register  # noqa: E402
 from src.sso import SSOClient  # noqa: E402
-from src.tempmail import TempMailClient  # noqa: E402
 
 KEYS = ["goto", "prewarm", "form_ready", "typed", "checkbox", "warmup",
         "captcha_ready"]
@@ -87,7 +87,7 @@ def main():
               f"{'（冷启动，统计时丢弃）' if i == 0 and args.drop_first else ''}"
               f"\n{'─' * 70}", flush=True)
         rec = AccountRecord(created_at=time.strftime("%Y-%m-%d %H:%M:%S"))
-        mail, sso = TempMailClient(), SSOClient()
+        mail, sso = make_source(), SSOClient()
         if not stage_register(mail, sso, rec, log=lambda m: None):
             print(f"[probe] 注册失败: {rec.error}", flush=True)
             continue

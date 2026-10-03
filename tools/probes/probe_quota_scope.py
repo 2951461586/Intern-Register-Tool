@@ -56,7 +56,7 @@ from _path import ROOT  # noqa: F401  （副作用：把 tools/ 与仓库根加�
 
 from src import config  # noqa: E402
 from src.crypto_rsa import encrypt_password  # noqa: E402
-from src.tempmail import TempMailClient  # noqa: E402
+from src.mailbox import make_source  # noqa: E402
 
 BASELINE_DOMAIN = config.WORKER_DOMAIN        # 取自 IR_WORKER_DOMAIN
 # 第二个候选刻意选**不同后缀**的域名，排除"同一后缀被连带"的解释。
@@ -181,7 +181,7 @@ def main() -> int:
     ap.add_argument("--tries", type=int, default=3, help="每个域名最多试几次")
     args = ap.parse_args()
 
-    mail = TempMailClient()
+    mail = make_source()
     domains = [BASELINE_DOMAIN, FALLBACK_DOMAIN]
     print(f"域名候选：{BASELINE_DOMAIN}（当前） / {FALLBACK_DOMAIN}（对照）")
     print(f"间隔 {args.gap}s，每域名最多 {args.tries} 次")

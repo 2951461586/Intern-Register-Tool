@@ -22,14 +22,26 @@ r"""验证 `tools/gates/check_leaks.py` **真的会拦**，而不是只会放行
 """
 
 import importlib.util
+import io
 import re
 import shutil
 import subprocess
 import sys
 import tempfile
 from pathlib import Path
+from typing import Any
 
 from _path import ROOT  # noqa: E402  （副作用：把 tools/ 与仓库根加进 sys.path）
+
+# 🔴 Windows 中文控制台默认 GBK，打印 ✓ / ✗ 会抛 UnicodeEncodeError。
+#    与 `check_leaks.py` 同一个坑（那个是 pre-commit 钩子，本文件是 CI 自检）。
+#    本文件是 `__main__` 脚本、只加载一次，所以模块级包一次即可（带幂等护栏）。
+if (hasattr(sys.stdout, "buffer")
+        and (getattr(sys.stdout, "encoding", "") or "").lower().replace("-", "") != "utf8"):
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8",
+                                  errors="replace")
+    sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding="utf-8",
+                                  errors="replace")
 
 REPO = ROOT
 GATE = Path(__file__).resolve().parent / "check_leaks.py"   # 与本文件同目录
@@ -78,9 +90,16 @@ CLEAN_TEXT = "\n".join([
 ]) + "\n"
 
 
-def load_gate():
-    """把闸门当模块加载（不执行 main）。"""
+def load_gate() -> Any:
+    """把闸门当模块加载（不执行 main）。
+
+    ⚠ 返回 `Any`：本文件会**故意改坏**闸门里的正则再断言（见 `[2] 变异验证`），
+      那是动态属性赋值，类型检查器不可能知道。与其加 `type: ignore`（本项目
+      不用这个），不如把“这是动态模块对象”写进签名。
+    """
     spec = importlib.util.spec_from_file_location("check_leaks_mod", GATE)
+    if spec is None or spec.loader is None:          # pragma: no cover
+        raise RuntimeError(f"加载不了闸门：{GATE}")
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     return mod

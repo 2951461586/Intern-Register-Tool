@@ -19,9 +19,9 @@ sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="repla
 from _path import ROOT  # noqa: F401  （副作用：把 tools/ 与仓库根加进 sys.path）
 
 from src import config
+from src.mailbox import make_source
 from src.pipeline import gen_password, gen_username
 from src.sso import SSOClient
-from src.tempmail import TempMailClient
 
 CHROME = config.CHROME_PATH
 BASE_ARGS = ["--disable-blink-features=AutomationControlled", "--no-sandbox",
@@ -91,7 +91,7 @@ def probe_and_login(label, extra_args, account, password):
 
 
 def main():
-    mail, sso = TempMailClient(), SSOClient()
+    mail, sso = make_source(), SSOClient()
     email = mail.create_mailbox(count=1)[0]
     user, pwd = gen_username(), gen_password()
     reg = sso.register(user, email, pwd)

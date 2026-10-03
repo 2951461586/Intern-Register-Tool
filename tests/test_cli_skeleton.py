@@ -31,6 +31,7 @@ ENTRIES = ("run.py", "tools/run_downstream.py")
 
 # ══ [1] `add_headless_args` 的接线语义 ═════════════════════════════════
 
+
 def _parse_headless(argv):
     ap = argparse.ArgumentParser()
     cli.add_headless_args(ap)
@@ -52,7 +53,8 @@ def test_headful_writes_into_the_same_destination():
     ns = _parse_headless(["--headful"])
     assert ns.headless is False
     assert not hasattr(ns, "headful"), (
-        "`--headful` 变成了一个独立字段 —— `dest='headless'` 丢了，开关会静默失效")
+        "`--headful` 变成了一个独立字段 —— `dest='headless'` 丢了，开关会静默失效"
+    )
 
 
 def test_headless_flag_is_accepted_and_idempotent():
@@ -63,14 +65,15 @@ def test_headless_flag_is_accepted_and_idempotent():
 
 # ══ [2] `merge_summary_line` 的逐字节格式 ═════════════════════════════
 
+
 def test_merge_summary_keeps_the_original_wording_byte_for_byte():
-    assert cli.merge_summary_line(53, 4, 0, 57) == \
-        "\n结果合并：原有 53 条 + 本次新增 4 条 = 57 条"
+    assert cli.merge_summary_line(53, 4, 0, 57) == "\n结果合并：原有 53 条 + 本次新增 4 条 = 57 条"
 
 
 def test_merge_summary_mentions_upgraded_only_when_nonzero():
     assert cli.merge_summary_line(10, 2, 3, 12) == (
-        "\n结果合并：原有 10 条 + 本次新增 2 条（3 条已更新：升级或补全字段） = 12 条")
+        "\n结果合并：原有 10 条 + 本次新增 2 条（3 条已更新：升级或补全字段） = 12 条"
+    )
     assert "已更新" not in cli.merge_summary_line(10, 2, 0, 12)
 
 
@@ -82,6 +85,7 @@ def test_merge_summary_returns_the_leading_newline():
 
 # ══ [3] 接线护栏：两个入口必须调用它，且不能再手写 ════════════════════
 
+
 def _called_attr_names(path: Path) -> set[str]:
     """模块里所有 `X.<name>(...)` 形式的调用名。
 
@@ -89,8 +93,11 @@ def _called_attr_names(path: Path) -> set[str]:
       （"别把它搬进 src/cli.py"之类），搜文本会被自己的注释判红。
     """
     tree = ast.parse(path.read_text(encoding="utf-8"))
-    return {n.func.attr for n in ast.walk(tree)
-            if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)}
+    return {
+        n.func.attr
+        for n in ast.walk(tree)
+        if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)
+    }
 
 
 def _add_argument_flags(path: Path) -> list[str]:
@@ -103,8 +110,11 @@ def _add_argument_flags(path: Path) -> list[str]:
         f = node.func
         if not (isinstance(f, ast.Attribute) and f.attr == "add_argument"):
             continue
-        if node.args and isinstance(node.args[0], ast.Constant) \
-                and isinstance(node.args[0].value, str):
+        if (
+            node.args
+            and isinstance(node.args[0], ast.Constant)
+            and isinstance(node.args[0].value, str)
+        ):
             flags.append(node.args[0].value)
     return flags
 
@@ -115,7 +125,8 @@ def test_entry_point_calls_the_shared_skeleton(rel):
     for fn in ("add_headless_args", "merge_summary_line"):
         assert fn in names, (
             f"{rel} 没有调用 src.cli.{fn} —— 又手写了一份？"
-            "两个入口对同一个开关/同一行摘要给出不同行为，是不会报错的缺陷。")
+            "两个入口对同一个开关/同一行摘要给出不同行为，是不会报错的缺陷。"
+        )
 
 
 @pytest.mark.parametrize("rel", ENTRIES)
@@ -127,16 +138,32 @@ def test_entry_point_no_longer_hand_writes_the_headless_pair(rel):
     """
     flags = _add_argument_flags(ROOT / rel)
     assert "--headless" not in flags and "--headful" not in flags, (
-        f"{rel} 里还有手写的 --headless/--headful 定义 —— 应当只走 "
-        "src.cli.add_headless_args")
+        f"{rel} 里还有手写的 --headless/--headful 定义 —— 应当只走 src.cli.add_headless_args"
+    )
 
 
 # ══ [4] 行为护栏：两个入口的 --help 必须报同一份说明 ══════════════════
 
+
 def _help_text(rel: str) -> str:
-    env = dict(os.environ, COLUMNS="200")      # 防 argparse 按窄终端折行
-    r = subprocess.run([sys.executable, rel, "--help"], cwd=str(ROOT), env=env,
-                       capture_output=True, text=True, encoding="utf-8", errors="replace")
+    # 🔴 两个环境变量缺一不可，各有各的失败模式：
+    #   · COLUMNS=200 —— 防 argparse 按窄终端折行，把说明句折成两段、
+    #     断言里那句连续文本就再也匹配不到。
+    #   · PYTHONIOENCODING=utf-8 —— 子进程 stdout 的默认编码**跟随本机
+    #     区域设置**（Windows 中文机 = gbk），而下面固定按 utf-8 解码 ⇒
+    #     中文说明会变成乱码、断言必红。CI 在 ubuntu 上跑（locale 本就是
+    #     UTF-8）不会暴露，所以这个坑**只在 Windows 本地**出现 ——
+    #     显式钉住子进程编码，判定才与运行机器的 locale 无关。
+    env = dict(os.environ, COLUMNS="200", PYTHONIOENCODING="utf-8")
+    r = subprocess.run(
+        [sys.executable, rel, "--help"],
+        cwd=str(ROOT),
+        env=env,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
     assert r.returncode == 0, f"{rel} --help 退出码 {r.returncode}：{r.stderr[:400]}"
     return r.stdout
 
@@ -153,6 +180,7 @@ def test_both_entries_advertise_the_same_headless_help(rel):
 
 
 # ══ [5] 故意钉住"不统一"的那个决定 ════════════════════════════════════
+
 
 def test_run_py_does_not_branch_on_is_ledger_path():
     """🔴 这条**故意**钉住一个"看起来该统一、其实不该"的决定。

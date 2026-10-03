@@ -26,6 +26,7 @@
 | `probe_reg_interval.py` ⚠️ 消耗配额 | `register/byEmail` 两次之间的**最小安全间隔**是多少 | 想改 `REG_MIN_INTERVAL`（现值 1.2s）时 | 各间隔档位的 429 数与耗时；间隔直接决定"首账号就绪时刻" | README「429 限流的真实边界」 |
 | `probe_quota_scope.py` ⚠️ 消耗配额 | 注册封禁是 **IP 维度**还是**邮箱域名维度** | 怀疑"换发信域名能解封"时 | 同 IP 只换域名后是否**仍**返回 `B0000`（实测：仍封 ⇒ 换域名没用） | README「注册配额是累计量限制」 |
 | `probe_register_ip.py` ⚠️ 消耗配额 | 封禁是不是 IP 维度、**换出口 IP 能不能解开** | 接入槽位池后做决定性实验 | 同邮箱域名 / 同参数、只换出口 IP 后的 `msgCode` | README「注册配额是累计量限制」 |
+| `probe_domain_gate.py` ⚠️ 消耗配额 | 站点**接受哪些邮箱域名**（注册门是白名单还是黑名单） | 注册被 `A0232` 拦住、要挑发信域名时 | 过盾后的 `msgCode`：`A0232` = 被拒、`success` = 通过。⚠ **无 `traceId` 的 429 是无效样本**，必须退避重试 | protocol.md「站点对收信域名走白名单」 |
 | `probe_balance.py` | 用**已存 JWT** 直查额度（不开浏览器、不登录） | 只想看额度、不想付登录代价时 | `credits/balance` 数值、单账号耗时（~0.5s，可几十路并发） | docs/protocol.md「免费额度的真实结构」 |
 | `probe_login_only.py` | 只测**登录**阶段（不注册、不建 key）；以及 `workers` 的真实扩展边界 | 注册被封但还想干活时；复测并发度时 | 登录成功率、`--with-discovery` 能否取回 JWT、各 `workers` 档位耗时 | README「workers 的边界」 |
 | `probe_login_timing.py` | 登录各段的真实耗时拆解 | 优化登录耗时前（先归因，别猜） | `goto / form_ready / typed / checkbox / warmup / captcha_ready` 六段；`captcha_wait` 恒 ~4.3–4.5s | README「实测耗时」 |

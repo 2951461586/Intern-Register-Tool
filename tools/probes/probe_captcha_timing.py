@@ -34,9 +34,9 @@ from pathlib import Path
 from _path import ROOT  # noqa: F401  （副作用：把 tools/ 与仓库根加进 sys.path）
 
 from src import browser  # noqa: E402
+from src.mailbox import make_source  # noqa: E402
 from src.pipeline import AccountRecord, stage_register  # noqa: E402
 from src.sso import SSOClient  # noqa: E402
-from src.tempmail import TempMailClient  # noqa: E402
 
 
 def main():
@@ -66,7 +66,7 @@ def main():
         print(f"\n{'─' * 68}\n[probe] {args.mode} 第 {i + 1}/{args.rounds} 轮\n{'─' * 68}",
               flush=True)
         rec = AccountRecord(created_at=time.strftime("%Y-%m-%d %H:%M:%S"))
-        mail, sso = TempMailClient(), SSOClient()
+        mail, sso = make_source(), SSOClient()
         if not stage_register(mail, sso, rec, log=lambda m: print(f"  {m}", flush=True)):
             print(f"[probe] 注册失败: {rec.error}", flush=True)
             continue

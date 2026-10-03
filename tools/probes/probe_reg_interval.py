@@ -44,8 +44,8 @@ from _path import ROOT  # noqa: F401  （副作用：把 tools/ 与仓库根加�
 
 from src import config  # noqa: E402
 from src.crypto_rsa import encrypt_password  # noqa: E402
+from src.mailbox import make_source  # noqa: E402
 from src.sso import SSOClient  # noqa: E402
-from src.tempmail import TempMailClient  # noqa: E402
 
 
 def gen_username() -> str:
@@ -83,7 +83,7 @@ def main():
     args = ap.parse_args()
 
     levels = [float(x) for x in args.levels.split(",")]
-    mail, sso = TempMailClient(), SSOClient()
+    mail, sso = make_source(), SSOClient()
     report = []
     stop = False
 
