@@ -168,7 +168,10 @@ _UNSET = object()
 
 
 def rank(rec: dict) -> int:
-    return _RANK.get(rec.get("status"), 0)
+    # `or ""` 不是多余的：`status` 缺失（或显式为 None）时，`dict.get` 的默认
+    # 只是 "没这个键"，而把 `None` 当**键**传给 `get` 在类型上就是错的。
+    # `_RANK` 里只有字符串键，所以空串与原来的 None 行为完全一致（都得 0）。
+    return _RANK.get(rec.get("status") or "", 0)
 
 
 def load_existing(path) -> list[dict]:
@@ -465,7 +468,7 @@ def _atomic_write(path, records: list[dict]) -> None:
     fsutil.atomic_write_text(path, json.dumps(records, ensure_ascii=False, indent=2))
 
 
-def save(path, records: list[dict], *, existing: list[dict] = None) -> Path:
+def save(path, records: list[dict], *, existing: list[dict] | None = None) -> Path:
     """写台账到**显式路径**，带防静默缩水护栏。返回实际落盘路径。
 
     走台账目录请用 `save_snapshot()` —— 这个函数只写你给的那个文件，
@@ -481,7 +484,11 @@ def save(path, records: list[dict], *, existing: list[dict] = None) -> Path:
 
 
 def save_snapshot(
-    merged: list[dict], batch: list[dict] = None, *, existing: list[dict] = None, when=None
+    merged: list[dict],
+    batch: list[dict] | None = None,
+    *,
+    existing: list[dict] | None = None,
+    when=None,
 ) -> tuple:
     """正式落盘：**全量快照** + **本批结果**。返回 `(快照路径, 本批路径)`。
 

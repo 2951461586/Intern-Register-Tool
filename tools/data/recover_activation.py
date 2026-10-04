@@ -68,7 +68,17 @@ def is_activation_failure(rec: dict) -> bool:
 
 
 def pick_from_ledger(path: Path) -> list[str]:
-    data = json.loads(path.read_text(encoding="utf-8"))
+    """从台账里挑出「注册成功、但卡在激活」的邮箱。
+
+    🔴 文件坏掉时**当场失败**，绝不返回空列表：本函数的返回值决定"要去救
+       哪些账号"，返回 `[]` 等于对外宣称"没有需要救的" —— 而那是这里最坏的
+       一种假绿（真有一批账号等着救，工具却说没事）。缺文件的情形由调用方
+       的 `is_file()` 先挡住。
+    """
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as ex:
+        raise SystemExit(f"台账不是合法 JSON：{path}\n  {ex}") from ex
     if isinstance(data, dict):  # 兼容 {"records": [...]}
         data = data.get("records", [])
     out = []
@@ -79,7 +89,7 @@ def pick_from_ledger(path: Path) -> list[str]:
 
 
 def recover_one(
-    mail: MailboxSource, email: str, *, proxy: str = None, timeout: int = 120, log=print
+    mail: MailboxSource, email: str, *, proxy: str | None = None, timeout: int = 120, log=print
 ) -> dict:
     """救一个账号。返回 `{"email", "verdict", "detail"}`。"""
     t0 = time.time()
@@ -236,7 +246,13 @@ def main() -> int:
                     "timings": {"activation_recovered_at": now},
                 }
             )
-        merged, upgraded = ledger.merge_records(existing, updates)
+        # 🔴 `merge_records` 返回 **4** 项 `(merged, kept, added, upgraded)`。
+        #    这里只用得到 `merged` 与 `upgraded`，但**解包个数必须写满 4** ——
+        #    原先写成 `merged, upgraded = ...` ⇒ 加了 `--write` 且真救回账号时
+        #    当场 `ValueError: too many values to unpack`（2026-10-04 修）。
+        #    这类"返回元组变长、调用点没跟上"现在有元测试盯着：
+        #    tests/test_repo_hygiene.py::test_merge_records_call_sites_unpack_all_four_values
+        merged, _kept, _added, upgraded = ledger.merge_records(existing, updates)
         if ledger.is_ledger_path(out):
             # 目标在台账目录里 ⇒ 走台账目录：留一份日期/时间戳快照（随即成为
             # **新读源**），并把合并后的全量刷进 `latest.json`。

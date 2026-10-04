@@ -26,8 +26,16 @@ r"""把配额台账的 scope 从「槽位位置号」迁移成「出口 IP」。
 
 怎么定位每条记录的真实出口
 --------------------------
-台账的 `proxy_slot` 字段里存着**当时的真实端口**，
-用 `email` 做键关联即可。关联不上的记录（池化之前那批，没有 `proxy_slot`）
+台账的 `proxy_slot` 字段里存着**当时的真实槽位 URL**
+（形如 `slot2(https://a.example.com:7119)`），
+把它交给 `config.slot_scope()` 换算成出口 IP，用 `email` 做键关联即可。
+
+🔴 **换算必须走 `config.slot_scope()`，本工具不自己查表** ——
+查表规则有两条（先 `host:port`、回退裸 `port`，见 `common/config.py`），
+在这里再写一遍就会在**端口重复**（远程代理的常态）时分叉：
+本地 mihomo 端口唯一、只拿端口查得中，于是分叉长期不暴露。
+
+关联不上的记录（池化之前那批，没有 `proxy_slot`）
 **保持原样** —— 它们本来就没有出口归属，不该硬塞一个。
 
 用法
@@ -55,45 +63,86 @@ from src import ledger  # noqa: E402
 DEFAULT_LEDGER = ROOT / ".workbuddy-ai" / "state" / "register_quota.jsonl"
 DEFAULT_RESULTS = ledger.ledger_path()
 
-# 从 `slot2(http://127.0.0.1:7903)` 里把端口抠出来。
-_PORT_RE = re.compile(r":(\d+)\s*\)")
+# 从 `slot2(http://127.0.0.1:7903)` 里把**槽位 URL** 抠出来。
+#
+# 🔴 不能只抠端口：`SLOT_EGRESS_IPS` 的键可以是 `host:port`（远程代理的端口
+#    会重复，只写端口区分不了机房）。只拿端口查表会把这类槽位全判成
+#    "不在映射表里" —— 而那是**静默跳过**：不报错、不崩，迁移报告看起来
+#    一切正常，实际上一条都没迁。
+_SLOT_URL_RE = re.compile(r"\((.*)\)\s*$")
+
+
+def _slot_url(proxy_slot: str) -> str | None:
+    """`slot2(http://127.0.0.1:7903)` → `http://127.0.0.1:7903`。"""
+    m = _SLOT_URL_RE.search(proxy_slot)
+    return m.group(1).strip() if m else None
+
+
+def _scope_key_for_report(url: str) -> str:
+    """查表失败时用来汇报的键 —— 优先 `host:port`（可直接拷进 `.env`）。"""
+    try:
+        host, port = config.slot_host_port(url)
+    except ValueError:
+        return url
+    return f"{host}:{port}"
 
 
 def load_email_to_ip(results_path: Path) -> dict[str, str]:
     """台账 → {email: 出口 IP}。
 
-    用 `proxy_slot` 里的**真实端口** + `config.SLOT_EGRESS_IPS` 换算成 IP。
-    端口不在映射表里就跳过（宁可少迁，不可迁错）。
+    用 `proxy_slot` 里的**真实槽位 URL** 过一遍 `config.slot_scope()` 换算成 IP
+    —— 查表顺序只在那一处实现（见模块 docstring 里的理由）。
+    换算不出来的跳过（宁可少迁，不可迁错），并把缺失的键报出来。
     """
     if not results_path.is_file():
         raise SystemExit(f"找不到 results 文件：{results_path}")
-    data = json.loads(results_path.read_text(encoding="utf-8"))
+    # ⚠ 刻意**不吞**异常：文件损坏时这里就该失败 —— 下一步是改写台账，
+    #   带着半份数据继续跑会把迁移**做一半**（且分布图看不出少了谁）。
+    #   但要把"哪个文件"说清楚：原始 traceback 只给偏移量，
+    #   对着一个几 MB 的台账根本定位不了。
+    try:
+        data = json.loads(results_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as ex:
+        raise SystemExit(f"results 文件不是合法 JSON：{results_path}\n  {ex}") from ex
     out: dict[str, str] = {}
-    unknown_port: collections.Counter = collections.Counter()
+    unknown: collections.Counter = collections.Counter()
     for rec in data:
         ps = rec.get("proxy_slot") or ""
         email = rec.get("email") or ""
         if not ps or not email:
             continue
-        m = _PORT_RE.search(ps)
-        if not m:
+        url = _slot_url(ps)
+        if url is None:
             continue
-        ip = config.SLOT_EGRESS_IPS.get(m.group(1))
-        if ip:
-            out[email] = ip
-        else:
-            unknown_port[m.group(1)] += 1
-    if unknown_port:
-        print(f"⚠ 有端口的出口 IP 不在 SLOT_EGRESS_IPS 里，已跳过：{dict(unknown_port)}")
+        try:
+            out[email] = config.slot_scope(url)
+        except ValueError:
+            unknown[_scope_key_for_report(url)] += 1
+    if unknown:
+        print("⚠ 这些槽位的出口 IP 不在 SLOT_EGRESS_IPS 里，已跳过（补进 .env 后重跑即可）：")
+        for key, n in unknown.most_common():
+            print(f"   {key}  ({n} 条)")
     return out
 
 
 def read_ledger(path: Path) -> list[dict]:
+    """逐行读台账。坏行**当场炸**（带行号），不静默跳过。
+
+    为什么不能跳过坏行：这个文件的读入结果会被 `main()` 原样写回去，
+    跳过一行就等于**默默删掉一个账号的配额记录**。而"能读出文件、但某行不是
+    合法 JSON"恰恰意味着台账被人手改坏过 —— 那是最需要停下来看的情形。
+
+    缺文件的情形由 `main()` 里的 `is_file()` 先挡住；到不了这里。
+    """
     rows = []
-    for line in path.read_text(encoding="utf-8").splitlines():
+    for lineno, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
         line = line.strip()
-        if line:
+        if not line:
+            continue
+        try:
             rows.append(json.loads(line))
+        except json.JSONDecodeError as ex:
+            raise SystemExit(f"台账第 {lineno} 行不是合法 JSON：{path}\n  {ex}") from ex
     return rows
 
 

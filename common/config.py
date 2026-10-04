@@ -305,6 +305,12 @@ def proxy_slots() -> list[str]:
     """读槽位清单。**没配置就返回空列表**（调用方据此退回单代理行为）。
 
     文件里允许一行一个，也允许逗号分隔；`#` 开头视为注释。
+
+    🔴 注释必须**按行**判定，不能先把全文按逗号切分再逐项看 `#` ——
+    后者会让注释行里的 ASCII 逗号切出**不带 `#` 的碎片**，碎片被当成槽位
+    URL（2026-10-04 实测：一行「# 端口是 7131,7119,7149」凭空产出 3 个假槽位，
+    报错还是「端口 7119 的出口 IP 未知」，指向注释里的数字，极难回溯）。
+    所以顺序是：先按行 → 丢掉空行/注释行 → 再在行内按逗号切。
     """
     raw = ""
     if IR_PROXY_SLOTS_FILE:
@@ -315,10 +321,14 @@ def proxy_slots() -> list[str]:
     elif IR_PROXY_SLOTS:
         raw = IR_PROXY_SLOTS
     out: list[str] = []
-    for line in raw.replace("\n", ",").split(","):
-        item = line.strip()
-        if item and not item.startswith("#"):
-            out.append(item)
+    for line in raw.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        for item in line.split(","):
+            item = item.strip()
+            if item and not item.startswith("#"):
+                out.append(item)
     return out
 
 
@@ -339,6 +349,15 @@ def proxy_slots() -> list[str]:
 #
 #        IR_SLOT_EGRESS_IPS=7901=10.0.0.1,7902=10.0.0.2
 #
+# 🔴 **键有两种写法，优先匹配 `host:port`，回退裸 `port`**：
+#        host:port  例：a.example.com:7119=10.0.0.1   ← 能区分"同端口不同机房"
+#        port       例：7901=10.0.0.1                 ← 旧写法，仍支持
+#    为什么裸 `port` 不够：本地 mihomo 槽位是 `127.0.0.1:7901..7906`，端口唯一，
+#    所以一直没暴露；但 BYO 远程代理的端口是别人给的、**会重复**（实测一批 5 个
+#    里有 7131×2、7119×2）⇒ 只按端口匹配会让两个不同出口 IP 共用一个 scope，
+#    配额静默记到别人头上 —— 与下面那段"绝不能用槽位号"是同一个失败模式。
+#    新接入远程代理时**用 `host:port` 写**；`port` 只是兼容旧配置。
+#
 # 🔴 换订阅 / 换节点 / 换机房之后这张表就过期了，必须重测：
 #        python tools/probes/probe_slots.py
 #    改完还要**同步迁移台账**（否则旧记录挂在旧 IP 名下）：
@@ -347,7 +366,10 @@ IR_SLOT_EGRESS_IPS = os.getenv("IR_SLOT_EGRESS_IPS", "").strip()
 
 
 def _parse_slot_egress(raw: str) -> dict:
-    """把 `7901=1.2.3.4,7902=5.6.7.8` 解析成 `{端口: IP}`。
+    """把 `7901=1.2.3.4,a.example.com:7119=5.6.7.8` 解析成 `{键: IP}`。
+
+    键就是等号左边，**不做任何规范化** —— 是 `host:port` 还是裸 `port`
+    由写的人决定，匹配顺序在 `slot_scope()` 里（先 `host:port` 后 `port`）。
 
     容忍换行分隔与空项；格式不对的项直接跳过（不抛），
     因为缺项会在 `slot_scope()` 里被更明确地报出来。
@@ -367,29 +389,71 @@ def _parse_slot_egress(raw: str) -> dict:
 SLOT_EGRESS_IPS: dict = _parse_slot_egress(IR_SLOT_EGRESS_IPS)
 
 
+def slot_host_port(url: str) -> tuple[str, int]:
+    """从槽位串里取出 `(host, port)`。支持三种写法：
+
+        http://user:pass@host:port    （带账密）
+        http://127.0.0.1:7901
+        127.0.0.1:7901                （裸 host:port）
+
+    刻意手写而不用 `urlsplit`：`127.0.0.1:7901` 这种**没有 scheme** 的写法
+    在 `urlsplit` 下会被当成 scheme（或落进 path），行为随输入形态而变。
+    这里只需要 host 和 port，手写反而更确定。
+
+    ⚠ URL 的 path 段被丢弃（`host:7119/a` → `7119`）：代理不用 path，
+      而 `_state_key()` 也不该因为路径不同被拆成两个槽位。
+
+    ⚠ 不支持 IPv6 字面量（`[::1]:7901`）。真要用 IPv6 得同时改这里和
+      `src/proxypool.py` 里所有按 `host:port` 记账的地方。
+
+    🔴 这个函数是**唯一**的槽位串解析实现：`src/proxypool._host_port()` 直接
+      委托过来。两份实现会漂移，而它们必须对同一个串给出同一个 host:port
+      —— 否则状态文件的键与 `slot_scope()` 的键会对不上。
+    """
+    raw = (url or "").strip()
+    if "://" in raw:
+        raw = raw.split("://", 1)[1]
+    if "@" in raw:
+        raw = raw.rsplit("@", 1)[1]
+    raw = raw.split("/", 1)[0]
+    host, _, port = raw.rpartition(":")
+    if not host or not port.isdigit():
+        raise ValueError(f"无法从槽位串解析出 host:port：{url!r}")
+    return host, int(port)
+
+
 def slot_scope(url: str) -> str:
     """把槽位 URL 映射成**配额记账的 scope**（= 那个槽位的出口 IP）。
 
     出口 IP 才是目标站点真正封的那个东西，也是唯一不随配置漂移的标识。
     用位置号（`slot1`/`slot2`）当 scope 是错的 —— 见 `SLOT_EGRESS_IPS` 的说明。
 
-    🔴 端口不在映射表里时**大声报错，不退回位置号**：
+    🔴 查表顺序：**先 `host:port`、再裸 `port`**。
+    `host:port` 是唯一写法（能区分"同端口不同机房"），裸 `port` 只为兼容
+    2026-10-04 之前写下的旧配置 —— 那时槽位全是本地 mihomo（`127.0.0.1` +
+    唯一端口），端口恰好够用。新接入远程代理请写 `host:port`。
+
+    🔴 两种键都查不到时**大声报错，不退回位置号**：
     静默错配会让某个 IP 悄悄超过上限（真被目标站封），
     比"跑不起来、逼你去补映射"危险得多。
     """
-    port = url.rsplit(":", 1)[-1].strip()
-    ip = SLOT_EGRESS_IPS.get(port)
-    if not ip:
-        raise ValueError(
-            f"槽位 {url} 的出口 IP 未知（端口 {port} 不在 SLOT_EGRESS_IPS 里）。\n"
-            f"  1) 先量出真实出口 IP： python tools/probes/probe_slots.py\n"
-            f"  2) 写进 .env（**不要写进源码**，出口 IP 不进仓库）：\n"
-            f"       IR_SLOT_EGRESS_IPS={port}=<那个槽位的出口 IP>\n"
-            f"     多个槽位用逗号分隔：7901=1.1.1.1,7902=2.2.2.2\n"
-            f"  3) 迁移台账： python tools/data/migrate_quota_scope.py --apply\n"
-            f"  —— 不能退回按槽位号记账：那会静默把配额记到别的 IP 头上。"
-        )
-    return ip
+    host, port = slot_host_port(url)
+    for key in (f"{host}:{port}", str(port)):
+        ip = SLOT_EGRESS_IPS.get(key)
+        if ip:
+            return ip
+    raise ValueError(
+        f"槽位 {url} 的出口 IP 未知（`{host}:{port}` 与 `{port}` 都不在 "
+        f"SLOT_EGRESS_IPS 里）。\n"
+        f"  1) 先量出真实出口 IP： python tools/probes/probe_slots.py\n"
+        f"  2) 写进 .env（**不要写进源码**，出口 IP 不进仓库）：\n"
+        f"       IR_SLOT_EGRESS_IPS={host}:{port}=<那个槽位的出口 IP>\n"
+        f"     多个槽位用逗号分隔：7901=1.1.1.1,a.example.com:7119=2.2.2.2\n"
+        f"     （裸端口 `{port}=<IP>` 也认 —— 那是旧写法，仅够用于本地 mihomo\n"
+        f"      这种端口唯一的槽位；远程代理端口会重复，必须写 `host:port`。）\n"
+        f"  3) 迁移台账： python tools/data/migrate_quota_scope.py --apply\n"
+        f"  —— 不能退回按槽位号记账：那会静默把配额记到别的 IP 头上。"
+    )
 
 
 def proxies(raw: str | None = None) -> dict | None:

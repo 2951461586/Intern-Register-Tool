@@ -196,30 +196,15 @@ class AllSlotsDead(RuntimeError):
 
 
 def _host_port(url: str) -> tuple[str, int]:
-    """从槽位串里取出 `(host, port)`。支持三种写法：
+    """从槽位串里取出 `(host, port)` —— **薄封装**，实现在 `config.slot_host_port()`。
 
-        http://user:pass@host:port    （带账密）
-        http://127.0.0.1:7901
-        127.0.0.1:7901                （裸 host:port）
-
-    刻意手写而不用 `urlsplit`：`127.0.0.1:7901` 这种**没有 scheme** 的写法
-    在 `urlsplit` 下会被当成 scheme（或落进 path），行为随输入形态而变。
-    这里只需要 host 和 port，手写反而更确定。
-
-    ⚠ 不支持 IPv6 字面量（`[::1]:7901`）。本项目的槽位一律是本机
-    `127.0.0.1`，不引入这个复杂度；真要用 IPv6 得同时改这里和
-    `config.slot_scope()`。
+    🔴 为什么不在这里自己解析：同一个槽位串必须同时喂给两个地方 ——
+    `_state_key()`（冷却/封禁状态文件的键）与 `config.slot_scope()`
+    （配额记账的 scope）。两份解析一旦漂移，就会出现"状态记在一个键上、
+    配额记在另一个键上"，且**不报错**。所以只留一份实现，在 config 层。
+    保留这个名字是因为本模块内部与 `tests/test_proxypool.py` 都在用它。
     """
-    raw = (url or "").strip()
-    if "://" in raw:
-        raw = raw.split("://", 1)[1]
-    if "@" in raw:
-        raw = raw.rsplit("@", 1)[1]
-    raw = raw.split("/", 1)[0]
-    host, _, port = raw.rpartition(":")
-    if not host or not port.isdigit():
-        raise ValueError(f"无法从槽位串解析出 host:port：{url!r}")
-    return host, int(port)
+    return config.slot_host_port(url)
 
 
 def check_slots_alive(slots: list[str], *, timeout: float = 0.5) -> tuple[list[str], list[str]]:
@@ -533,7 +518,7 @@ class ProxySlotPool:
         return min(pending) if pending else now
 
     def acquire(
-        self, *, timeout: float | None = None, exclude: set = None, accept=None
+        self, *, timeout: float | None = None, exclude: set | None = None, accept=None
     ) -> SlotLease:
         """取一个槽位。全忙/全冷却时**阻塞等待**，超时抛 `TimeoutError`。
 

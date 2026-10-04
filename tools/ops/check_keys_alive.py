@@ -119,7 +119,7 @@ def probe_models(
     return _ak.VERDICT_ERROR, last  # pragma: no cover
 
 
-def probe_chat(key: str, model: str = None) -> tuple:
+def probe_chat(key: str, model: str | None = None) -> tuple:
     """真发一次推理 —— 唯一能证明"真能用"的判据。
 
     🔴 `max_tokens` 不能给太小：本项目实测（2026-09-16）默认模型
