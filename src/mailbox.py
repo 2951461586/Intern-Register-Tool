@@ -1313,12 +1313,20 @@ class RemailMailbox:
             out.append(addr)
         return out
 
+    def _auth_headers(self) -> dict:
+        """订单类接口（下单 / 查订单）的鉴权头。
+
+        🔴 **取件不走这里**：`/v1/pickup` 的鉴权是每单的 `serviceToken`
+        （OpenAPI 里标的 `security: []`）。两条路径的鉴权不一样，别图省事合并。
+        """
+        return {"Authorization": f"Bearer {self.api_key}"}
+
     def _place_order(self, suffix: str) -> dict:
         idem = uuid.uuid4().hex  # 幂等键：同 key 同 idem 不会重复建单
         r = self.session.post(
             f"{self.base}/v1/open/orders",
             headers={
-                "Authorization": f"Bearer {self.api_key}",
+                **self._auth_headers(),
                 "Idempotency-Key": idem,
                 "Content-Type": "application/json",
             },
@@ -1381,6 +1389,95 @@ class RemailMailbox:
             received_at=_iso_ms(item.get("receivedAt")),
         )
 
+    # ── 按地址回捞凭据 ────────────────────────────────────────
+    # 🔴 为什么必须有这条路（2026-10-04 实测踩到）：`_tokens` 只在
+    #    `create_mailbox` 时进**内存**、**不落盘** ⇒ 换一个进程（
+    #    `recover_activation.py` 就是）就再也取不了件，`wait_for_mail` 永远只说
+    #    “没有订单凭据” —— remail 账号的激活于是**根本救不回来**。
+    #
+    #    平台侧查得回来（实测确认）：
+    #        列表 GET /v1/open/orders?search=<完整地址>   → 列表**不含** token
+    #        详情 GET /v1/open/orders/{orderNo}           → 含 `serviceToken`
+    #    实测：3055 单里 `search=<完整邮箱>` 精确命中 1 条。
+    def _lookup_order(self, address: str) -> tuple[dict | None, str]:
+        """按地址在平台侧找订单。返回 `(订单, 失败原因)`；没这单时原因为 `""`。
+
+        🔴 **必须带 `Authorization`**：这个接口要 API Key，而 `self.session` 的
+        默认头里**只有** `Accept`（鉴权头原本只在 `_place_order` 里逐次传）。
+        带不上就是 401，而 401 会被下游表现成"查不到订单" ⇒
+        把"Key 不对"伪装成"这单不是你的"。实测踩到过。
+        401/403 单独报出来，就是为了不再把这两种原因混成一句。
+        """
+        try:
+            r = self.session.get(
+                f"{self.base}/v1/open/orders",
+                headers=self._auth_headers(),
+                params={"limit": 100, "search": address},
+                timeout=self.timeout,
+            )
+            body = _json_body(r)
+        except Exception as ex:  # noqa: BLE001
+            return None, f"订单查询接口连不上（{type(ex).__name__}）"
+        if r.status_code in (401, 403):
+            return None, f"订单查询被拒（HTTP {r.status_code}）—— API Key 不对或没权限"
+        if r.status_code != 200 or not isinstance(body, dict):
+            return None, f"订单查询失败（HTTP {r.status_code}）"
+        for o in body.get("items") or []:
+            # 🔴 只认**精确**匹配。`search` 是模糊的（实测 `search=nancyhill`
+            #    会返回 2 条），拿错订单的 token 等于去读**别人的**信箱。
+            if isinstance(o, dict) and str(o.get("deliveryEmail") or "") == address:
+                return o, ""
+        return None, ""
+
+    def _restore_token(self, address: str) -> tuple[str, str]:
+        """回捞 `serviceToken` 并缓存。返回 `(token, 失败原因)`，成功时原因为 `""`。
+
+        🔴 失败原因必须**可区分**（2026-10-04 实测两种同时出现）：
+          · 平台侧没这个地址的订单 —— 账号 / API Key 不对，只能换 Key；
+          · 订单在、但平台没给 token —— 多半已退款 / 清理，等多久都没用。
+        混成一句“查不到”会把人引去翻 API Key，而真实原因在另一边。
+
+        回捞是**尽力而为**的附加查询：查不动就返回原因、不抛 —— 不能让一个
+        附加查询把主因（邮件没到）盖掉。
+        """
+        o, why = self._lookup_order(address)
+        if why:
+            return "", why
+        if not o:
+            return "", "平台侧没有这个地址的订单（不是本 API Key 下的单？）"
+        order_no = str(o.get("orderNo") or "")
+        status = str(o.get("status") or "")
+        tok = str(o.get("serviceToken") or "")
+        if not tok and order_no:
+            # 列表接口**不含** token ⇒ 必须再查一次详情（实测确认）。
+            # 🔴 同样要带 `Authorization`。漏了就是 401，而下面就变成
+            #    “平台没给 serviceToken（多半已退款 / 清理）” —— 把
+            #    “我们没查成”说成“平台没给”，是个**错误结论**
+            #    （实测：status=active、有 token 的订单被报成已退款）。
+            try:
+                d = self.session.get(
+                    f"{self.base}/v1/open/orders/{order_no}",
+                    headers=self._auth_headers(),
+                    timeout=self.timeout,
+                )
+                det = _json_body(d)
+            except Exception as ex:  # noqa: BLE001
+                return "", f"订单 {order_no} 详情查询连不上（{type(ex).__name__}）"
+            if d.status_code in (401, 403):
+                return "", f"订单详情查询被拒（HTTP {d.status_code}）—— API Key 不对或没权限"
+            if d.status_code != 200 or not isinstance(det, dict):
+                return "", f"订单 {order_no} 详情查询失败（HTTP {d.status_code}）"
+            tok = str(det.get("serviceToken") or "")
+            status = str(det.get("status") or status)
+        if tok:
+            self._tokens[address] = tok
+            self._orders[address] = order_no
+            return tok, ""
+        return "", (
+            f"订单 {order_no} 在，但平台没给 serviceToken"
+            f"（status={status or '未知'}，多半已退款 / 清理）"
+        )
+
     def wait_for_mail(
         self,
         address: str,
@@ -1399,9 +1496,15 @@ class RemailMailbox:
         self.last_polls = 0
         self.last_http_errors = 0
         token = self._tokens.get(address)
+        why = ""
+        if not token and self.api_key:
+            # 本进程没下过这个单 ⇒ 按地址回捞（见 `_restore_token`）。
+            # 带 `api_key` 守卫：没有 Key 时列表接口只会 401，白跑一趟。
+            token, why = self._restore_token(address)
         if not token:
             self.last_error = (
-                f"remail 没有 {address} 的订单凭据（地址不是本实例 create_mailbox 下的单？）"
+                f"remail 没有 {address} 的订单凭据"
+                f"（本实例没下过这个单；{why or '回捞未启用（缺 API Key）'}）"
             )
             return None
         timeout = timeout or self.wait_timeout

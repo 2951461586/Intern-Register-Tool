@@ -1295,7 +1295,7 @@ class FakeRemailSession:
     （下单参数拼装、token 记账、轮询、正文提取、`&amp;` 反转义）。
     """
 
-    def __init__(self, *, orders=None, pickups=None, messages=None):
+    def __init__(self, *, orders=None, pickups=None, messages=None, remote_orders=None):
         self.orders = (
             orders
             if orders is not None
@@ -1308,6 +1308,13 @@ class FakeRemailSession:
                 }
             ]
         )
+        # `remote_orders` = **平台侧**的订单（可能是别的进程 / 更早的运行下的单），
+        # 形如详情接口的返回（含 `serviceToken`）。
+        # 🔴 列表接口会**抹掉** `serviceToken` —— 这是照实现实行为造的
+        #    （2026-10-04 实测：`GET /v1/open/orders` 不含 token，
+        #      只有 `GET /v1/open/orders/{orderNo}` 才给）。
+        #    所以一个“直接信列表”的实现会在下面几条用例里当场红。
+        self.remote_orders = remote_orders if remote_orders is not None else []
         self.pickups = pickups if pickups is not None else [{"items": []}]
         self.messages = messages or {}
         self.calls: list[tuple] = []
@@ -1327,6 +1334,22 @@ class FakeRemailSession:
         self.calls.append(("GET", url, params, None, headers))
         if "/messages/" in url:
             return FakeResp(200, self.messages.get(params.get("email"), {}))
+        if url.rstrip("/").endswith("/v1/open/orders"):
+            term = str(params.get("search") or "")
+            matched = [
+                o
+                for o in self.remote_orders
+                if not term or term in str(o.get("deliveryEmail") or "")
+            ]
+            # 列表**不含** token（见上面 `remote_orders` 的说明）
+            items = [{k: v for k, v in o.items() if k != "serviceToken"} for o in matched]
+            return FakeResp(200, {"items": items, "total": len(items), "hasNext": False})
+        if "/v1/open/orders/" in url:
+            want = url.rsplit("/", 1)[-1]
+            for o in self.remote_orders:
+                if o.get("orderNo") == want:
+                    return FakeResp(200, o)
+            return FakeResp(404, {"message": "order not found"})
         b = self.pickups[min(self._pickup_i, len(self.pickups) - 1)]
         self._pickup_i += 1
         return FakeResp(200, b)
@@ -1403,7 +1426,7 @@ def test_remail_pickup_carries_the_per_order_token(monkeypatch):
     fake = FakeRemailSession(pickups=[{"items": []}])
     m = _remail(monkeypatch, fake)
     m._tokens["u@outlook.com"] = "st_secret"
-    m.wait_for_mail("u@outlook.com", timeout=0.05, interval=0.01)
+    m.wait_for_mail("u@outlook.com", timeout=1, interval=0.01)
     gets = [c for c in fake.calls if c[0] == "GET"]
     assert gets, "至少打了一次取件"
     assert gets[0][2]["token"] == "st_secret"
@@ -1435,6 +1458,202 @@ def test_remail_unknown_address_sets_last_error_not_raises(monkeypatch):
     m = _remail(monkeypatch, FakeRemailSession())
     assert m.wait_for_mail("nobody@x.com", timeout=1, interval=0.01) is None
     assert "订单凭据" in m.last_error
+
+
+# ── 5b. 按地址回捞凭据（2026-10-04）──────────────────────────────────
+# 为什么必须有这条通路：`_tokens` 只在 `create_mailbox` 时进**内存**、**不落盘**
+# ⇒ 任何新进程（`recover_activation.py` 就是）都必然说“没有订单凭据”，
+#   remail 账号的激活就永远救不回来。
+# 平台侧能查回来（实测确认）：
+#     GET /v1/open/orders?search=<完整地址>   → 列表（**不含** token）
+#     GET /v1/open/orders/{orderNo}           → 详情（**含** serviceToken）
+def test_remail_recovers_credentials_for_an_earlier_process_order(monkeypatch):
+    """🔴 本进程没下过单，也要能按地址把 `serviceToken` 找回来并取件。"""
+    fake = FakeRemailSession(
+        remote_orders=[
+            {
+                "orderNo": "OR9",
+                "deliveryEmail": "old@outlook.com",
+                "serviceToken": "st_9",
+                "status": "active",
+            }
+        ],
+        pickups=[
+            {
+                "items": [
+                    {
+                        "id": 1,
+                        "sender": "no-reply@openxlab.org.cn",
+                        "subject": "activate",
+                        "bodyPreview": "https://sso.openxlab.org.cn/a?t=1",
+                    }
+                ]
+            }
+        ],
+    )
+    m = _remail(monkeypatch, fake)
+    assert m._tokens == {}, "本进程不该有任何凭据"
+
+    mail = m.wait_for_mail("old@outlook.com", timeout=1, interval=0.01)
+    assert mail is not None, m.last_error
+    assert m._tokens["old@outlook.com"] == "st_9"
+    assert m._orders["old@outlook.com"] == "OR9"
+
+    # 取件必须带上**回捞到的** token（不是空串、也不是别人的）
+    pickup = [c for c in fake.calls if c[0] == "GET" and str(c[1]).endswith("/v1/pickup")]
+    assert pickup, "至少打了一次取件"
+    assert pickup[0][2]["token"] == "st_9"
+
+
+def test_remail_recovered_credentials_are_cached(monkeypatch):
+    """回捞一次就缓存 —— 不然每轮轮询都会再打一次列表接口。"""
+    fake = FakeRemailSession(
+        remote_orders=[
+            {
+                "orderNo": "OR9",
+                "deliveryEmail": "old@outlook.com",
+                "serviceToken": "st_9",
+                "status": "active",
+            }
+        ],
+        pickups=[
+            {
+                "items": [
+                    {
+                        "id": 1,
+                        "sender": "no-reply@openxlab.org.cn",
+                        "subject": "x",
+                        "bodyPreview": "https://x/y",
+                    }
+                ]
+            }
+        ],
+    )
+    m = _remail(monkeypatch, fake)
+    m.wait_for_mail("old@outlook.com", timeout=1, interval=0.01)
+    m.wait_for_mail("old@outlook.com", timeout=1, interval=0.01)
+    lists = [
+        c for c in fake.calls if c[0] == "GET" and str(c[1]).rstrip("/").endswith("/v1/open/orders")
+    ]
+    assert len(lists) == 1, f"回捞了 {len(lists)} 次，应当只 1 次"
+
+
+def test_remail_lookup_failure_degrades_to_the_plain_error(monkeypatch):
+    """回捞接口本身出错时**不能**抛 —— 退化成原来的“没有订单凭据”。
+
+    收信流程绝不能因为一个附加的查询而崩：主因（邮件没到）会被这条路盖住。
+    """
+
+    class BrokenList(FakeRemailSession):
+        def get(self, url, headers=None, params=None, timeout=None):
+            if str(url).rstrip("/").endswith("/v1/open/orders"):
+                self.calls.append(("GET", url, params, None, headers))
+                return FakeResp(500, {"message": "boom"}, text="boom")
+            return super().get(url, headers=headers, params=params, timeout=timeout)
+
+    m = _remail(monkeypatch, BrokenList())
+    assert m.wait_for_mail("old@outlook.com", timeout=1, interval=0.01) is None
+    assert "订单凭据" in m.last_error
+
+
+def test_remail_restore_failure_says_why(monkeypatch):
+    """🔴 回捞失败要能**区分**“平台侧没这个单”与“单在、但平台没给 token”。
+
+    两者处置完全不同：前者是账号 / Key 不对（换 Key，或承认救不回来），
+    后者是订单被退款 / 清理（等多少天都没用）。混成一句“查不到”会把人引去
+    翻 API Key —— 而真实原因在另一边（2026-10-04 实测两种同时出现：
+    一批“不在本 Key 名下”的地址是前者，一个“订单已退款”的是后者）。
+
+    ⚠ 这里刻意**不写真实域名**：它是 `.env` 里的基础设施标识，进公开仓库
+      等于贴出去（泄漏闸门会拦 —— 本用例就因此被拦过一次）。
+    """
+    fake = FakeRemailSession(
+        remote_orders=[
+            {
+                "orderNo": "ORZ",
+                "deliveryEmail": "refunded@x.com",
+                "status": "refunded",
+            }
+        ],  # 单在，但**没有** serviceToken
+    )
+    m = _remail(monkeypatch, fake)
+
+    assert m.wait_for_mail("nobody@x.com", timeout=1, interval=0.01) is None
+    assert "不是本 API Key 下的单" in m.last_error, m.last_error
+
+    assert m.wait_for_mail("refunded@x.com", timeout=1, interval=0.01) is None
+    assert "refunded" in m.last_error, m.last_error
+    assert "serviceToken" in m.last_error, m.last_error
+    assert "不是本 API Key 下的单" not in m.last_error, (
+        "单已经找到了，就不该再说“不是本 Key 下的单” —— 那是另一个原因"
+    )
+
+
+def test_remail_lookup_carries_the_api_key(monkeypatch):
+    """🔴 订单查询接口**要 API Key** —— 与取件（只认 `serviceToken`）不是一套鉴权。
+
+    判别力：`RemailMailbox` 给 `self.session` 设的默认头里**只有** `Accept`。
+    鉴权头原本只在 `_place_order` 里逐次传，回捞那条路漏了 ⇒ 查询 401，
+    而 401 在调用方眼里就是“查不到订单”，把“Key 不对”伪装成“这单不是你的”。
+    实测踩到过（2026-10-04：直接探针查得到，走 `_lookup_order` 却“未命中”）。
+    """
+    fake = FakeRemailSession(
+        remote_orders=[
+            {"orderNo": "OR9", "deliveryEmail": "old@outlook.com", "serviceToken": "st_9"}
+        ]
+    )
+    m = _remail(monkeypatch, fake)
+    m.wait_for_mail("old@outlook.com", timeout=1, interval=0.01)
+
+    # 列表 + 详情**两处**都要带（本次就是详情那处漏了：只修列表不够）
+    orders = [c for c in fake.calls if c[0] == "GET" and "/v1/open/orders" in str(c[1])]
+    assert len(orders) == 2, f"应当打了列表 + 详情各一次：{orders}"
+    for c in orders:
+        assert (c[4] or {}).get("Authorization") == "Bearer rk-test", (
+            f"{c[1]} 没带 Authorization：{c[4]!r}"
+        )
+
+
+def test_remail_detail_query_failure_is_not_reported_as_a_missing_token(monkeypatch):
+    """🔴 详情查询**失败** ⇒ 不能说成“平台没给 token / 已退款”。
+
+    实测踩到过：`status=active`、明明有 token 的订单，被报成
+    “多半已退款 / 清理” —— 根因只是详情那次调用漏了鉴权头。
+    **错误结论比没有结论更坏**：它会让人去查订单为什么被退款。
+    """
+
+    class BrokenDetail(FakeRemailSession):
+        def get(self, url, headers=None, params=None, timeout=None):
+            if "/v1/open/orders/" in str(url):
+                self.calls.append(("GET", url, params, None, headers))
+                return FakeResp(500, {"message": "boom"}, text="boom")
+            return super().get(url, headers=headers, params=params, timeout=timeout)
+
+    fake = BrokenDetail(
+        remote_orders=[
+            {"orderNo": "OR9", "deliveryEmail": "old@outlook.com", "serviceToken": "st_9"}
+        ]
+    )
+    m = _remail(monkeypatch, fake)
+    assert m.wait_for_mail("old@outlook.com", timeout=1, interval=0.01) is None
+    assert "详情查询失败" in m.last_error, m.last_error
+    assert "已退款" not in m.last_error, m.last_error
+
+
+def test_remail_lookup_auth_failure_is_reported_as_a_key_problem(monkeypatch):
+    """查询被 401 拒 ⇒ 报“Key 不对”，**不能**说成“这单不是你的”。"""
+
+    class Unauthorized(FakeRemailSession):
+        def get(self, url, headers=None, params=None, timeout=None):
+            if str(url).rstrip("/").endswith("/v1/open/orders"):
+                self.calls.append(("GET", url, params, None, headers))
+                return FakeResp(401, {"message": "invalid api key"}, text="invalid api key")
+            return super().get(url, headers=headers, params=params, timeout=timeout)
+
+    m = _remail(monkeypatch, Unauthorized())
+    assert m.wait_for_mail("old@outlook.com", timeout=1, interval=0.01) is None
+    assert "API Key" in m.last_error, m.last_error
+    assert "不是本 API Key 下的单" not in m.last_error, m.last_error
 
 
 def test_validate_remail_branch_requires_api_key(monkeypatch):
