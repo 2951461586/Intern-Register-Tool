@@ -50,7 +50,7 @@ class ApiKey:
 
 
 class DiscoveryClient:
-    def __init__(self, jwt: str = "", cookies: dict = None, timeout: int = None):
+    def __init__(self, jwt: str = "", cookies: dict | None = None, timeout: int | None = None):
         self.base = config.DISCOVERY_API
         self.jwt = jwt
         self.timeout = timeout or config.REQUEST_TIMEOUT

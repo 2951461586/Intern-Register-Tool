@@ -17,7 +17,7 @@ from .constants import MICRO_MOVE, MICRO_WAIT_MS
 # 人类化鼠标动作
 # ────────────────────────────────────────────────────────────────
 def _human_move(page, x0: float, y0: float, x1: float, y1: float,
-                *, steps: int = None) -> None:
+                *, steps: int | None = None) -> None:
     """沿三次贝塞尔曲线分步移动鼠标，模拟人类轨迹。
 
     真人移动的特征：不是直线、有轻微弧度、速度先快后慢（ease-out）、
@@ -49,7 +49,7 @@ def _human_move(page, x0: float, y0: float, x1: float, y1: float,
         page.wait_for_timeout(random.randint(9, 30))
 
 
-def _idle_wait(page, *, stats: dict = None) -> None:
+def _idle_wait(page, *, stats: dict | None = None) -> None:
     """**不发任何输入事件**，只泵送事件循环地等一小段。
 
     两个用途，语义相同（都是"让页面安静下来"）：
@@ -65,7 +65,7 @@ def _idle_wait(page, *, stats: dict = None) -> None:
     page.wait_for_timeout(MICRO_WAIT_MS)
 
 
-def _micro_move(page, cur: tuple, vw: int, vh: int, *, stats: dict = None) -> tuple:
+def _micro_move(page, cur: tuple, vw: int, vh: int, *, stats: dict | None = None) -> tuple:
     """做一次小幅鼠标移动，返回新位置。
 
     用途：在"等验证码 SDK 初始化"这类原本空转的等待里持续产生行为数据。
@@ -95,7 +95,7 @@ def _micro_move(page, cur: tuple, vw: int, vh: int, *, stats: dict = None) -> tu
     return (x, y)
 
 
-def _warmup_mouse(page, vw: int, vh: int, *, stats: dict = None) -> tuple:
+def _warmup_mouse(page, vw: int, vh: int, *, stats: dict | None = None) -> tuple:
     """提交前的短暖场（2~3 轮）。
 
     真正的长时间鼠标活动交给 `_micro_move` 在验证码初始化等待期间做 ——

@@ -270,8 +270,8 @@ class ProxySlotPool:
     `describe()` 里显式告警。
     """
 
-    def __init__(self, slots: list[str], *, cooldown: float = None,
-                 cooldown_max: float = None, slot_ips: dict = None,
+    def __init__(self, slots: list[str], *, cooldown: float | None = None,
+                 cooldown_max: float | None = None, slot_ips: dict | None = None,
                  log=None):
         if not slots:
             raise ValueError("ProxySlotPool 需要至少一个槽位")
@@ -523,7 +523,7 @@ class ProxySlotPool:
         pending = [t for t in self._cool_until.values() if t > now]
         return min(pending) if pending else now
 
-    def acquire(self, *, timeout: float = None,
+    def acquire(self, *, timeout: float | None = None,
                 exclude: set = None, accept=None) -> SlotLease:
         """取一个槽位。全忙/全冷却时**阻塞等待**，超时抛 `TimeoutError`。
 
@@ -751,8 +751,8 @@ def _resolve_slot_ips(slots: list[str], log) -> "dict | None":
     return out
 
 
-def build_pool(*, log=None, cooldown: float = None,
-               preflight: bool = None) -> "ProxySlotPool | None":
+def build_pool(*, log=None, cooldown: float | None = None,
+               preflight: bool | None = None) -> "ProxySlotPool | None":
     """按配置建池。**未配置槽位时返回 `None`** —— 调用方据此退回单代理行为。
 
     🔴 "未配置就退回旧行为"是刻意的：这个功能不能改变没配它的人的运行结果。

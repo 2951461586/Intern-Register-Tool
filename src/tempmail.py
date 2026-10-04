@@ -60,7 +60,7 @@ class Mail:
 
 
 class TempMailClient:
-    def __init__(self, base: str = None, token: str = None, timeout: int = None):
+    def __init__(self, base: str | None = None, token: str | None = None, timeout: int | None = None):
         self.base = (base or config.WORKER_BASE).rstrip("/")
         self.token = token or config.WORKER_ADMIN_TOKEN
         self.timeout = timeout or config.REQUEST_TIMEOUT
@@ -88,7 +88,7 @@ class TempMailClient:
         })
 
     # ── 邮箱管理 ──────────────────────────────────────────────
-    def create_mailbox(self, domain: str = None, count: int = 1) -> list[str]:
+    def create_mailbox(self, domain: str | None = None, count: int = 1) -> list[str]:
         r = self.session.post(
             f"{self.base}/api/mailboxes",
             json={"domain": domain or config.WORKER_DOMAIN, "count": count},
@@ -101,7 +101,7 @@ class TempMailClient:
         return data.get("emails", [])
 
     # ── 邮件读取 ──────────────────────────────────────────────
-    def list_mails(self, limit: int = None, email: str = None) -> list[Mail]:
+    def list_mails(self, limit: int | None = None, email: str | None = None) -> list[Mail]:
         """列邮件。
 
         🔴 **`email` 给定 → 走 `/api/inbox?email=`**（服务端按
@@ -151,10 +151,10 @@ class TempMailClient:
         self,
         address: str,
         sender_contains: str = "openxlab",
-        timeout: int = None,
-        interval: float = None,
+        timeout: int | None = None,
+        interval: float | None = None,
         since_ts: int = 0,
-        limit: int = None,
+        limit: int | None = None,
     ) -> Mail | None:
         """轮询等待目标地址的邮件。
 

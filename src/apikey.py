@@ -80,7 +80,7 @@ def wait_until_active(key: str, *, attempts: int = 4, delay: float = 6.0,
     return False
 
 
-def chat(key: str, prompt: str, *, model: str = None, timeout: int = 180,
+def chat(key: str, prompt: str, *, model: str | None = None, timeout: int = 180,
          max_tokens: int = 256) -> ChatResult:
     """发一次对话补全。"""
     model = model or (config.CHAT_MODELS[0] if config.CHAT_MODELS else "")

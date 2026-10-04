@@ -200,7 +200,7 @@ def shortfall_hint(total_left: int, planned: int, ignore_quota: bool) -> str:
     return ""
 
 
-def status(scope: str = None) -> QuotaStatus:
+def status(scope: str | None = None) -> QuotaStatus:
     """统计**当前滚动窗口内**的成功注册数。
 
     `scope` 是**出口作用域**。槽位池模式下传的是那个槽位的**出口 IP**
@@ -273,7 +273,7 @@ def _compact_if_needed(st: QuotaStatus) -> None:
 
 
 def check_or_raise(*, planned: int = 1, allow_partial: bool = False,
-                   scope: str = None) -> QuotaStatus:
+                   scope: str | None = None) -> QuotaStatus:
     """启动前检查。配额不足时抛 `QuotaExceeded`。
 
     allow_partial=False（默认，严格）：计划量只要超出剩余就抛。
