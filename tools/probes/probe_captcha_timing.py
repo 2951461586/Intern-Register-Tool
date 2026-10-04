@@ -42,30 +42,42 @@ from src.sso import SSOClient  # noqa: E402
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--mode", choices=["on", "off"], required=True,
-                    help="on=实验组(微移动) off=对照组(纯等待)")
+    ap.add_argument(
+        "--mode", choices=["on", "off"], required=True, help="on=实验组(微移动) off=对照组(纯等待)"
+    )
     ap.add_argument("--rounds", type=int, default=3)
     ap.add_argument("--gap", type=float, default=4.0, help="轮次间隔（秒），避开注册限流")
-    ap.add_argument("--budget", type=float, default=None,
-                    help="微移动预算秒数（对应 IR_MICRO_BUDGET），仅 mode=on 有意义")
+    ap.add_argument(
+        "--budget",
+        type=float,
+        default=None,
+        help="微移动预算秒数（对应 IR_MICRO_BUDGET），仅 mode=on 有意义",
+    )
     ap.add_argument("--out", default=None)
     args = ap.parse_args()
 
     # 一致性自检：环境变量是否真的生效（写错就白跑一整轮）
-    flag_ok = (browser.MICRO_MOVE == (args.mode == "on"))
+    flag_ok = browser.MICRO_MOVE == (args.mode == "on")
     if args.budget is not None and args.mode == "on":
         flag_ok = flag_ok and abs(browser.MICRO_BUDGET_S - args.budget) < 1e-6
-    print(f"[probe] mode={args.mode}  MICRO_MOVE={browser.MICRO_MOVE}  "
-          f"budget={browser.MICRO_BUDGET_S}s  一致={flag_ok}", flush=True)
+    print(
+        f"[probe] mode={args.mode}  MICRO_MOVE={browser.MICRO_MOVE}  "
+        f"budget={browser.MICRO_BUDGET_S}s  一致={flag_ok}",
+        flush=True,
+    )
     if not flag_ok:
-        print("[probe] ✗ 环境变量与 --mode/--budget 不一致，请检查 "
-              "IR_NO_MICRO_MOVE / IR_MICRO_BUDGET", flush=True)
+        print(
+            "[probe] ✗ 环境变量与 --mode/--budget 不一致，请检查 "
+            "IR_NO_MICRO_MOVE / IR_MICRO_BUDGET",
+            flush=True,
+        )
         return 2
 
     rows = []
     for i in range(args.rounds):
-        print(f"\n{'─' * 68}\n[probe] {args.mode} 第 {i + 1}/{args.rounds} 轮\n{'─' * 68}",
-              flush=True)
+        print(
+            f"\n{'─' * 68}\n[probe] {args.mode} 第 {i + 1}/{args.rounds} 轮\n{'─' * 68}", flush=True
+        )
         rec = AccountRecord(created_at=time.strftime("%Y-%m-%d %H:%M:%S"))
         mail, sso = make_source(), SSOClient()
         if not stage_register(mail, sso, rec, log=lambda m: print(f"  {m}", flush=True)):
@@ -73,9 +85,15 @@ def main():
             continue
 
         t0 = time.time()
-        res = browser.login(rec.email, rec.password, headless=False,
-                                  timeout=60, attempts=1, verbose=True,
-                                  settings=browser.BrowserSettings.from_config(config))
+        res = browser.login(
+            rec.email,
+            rec.password,
+            headless=False,
+            timeout=60,
+            attempts=1,
+            verbose=True,
+            settings=browser.BrowserSettings.from_config(config),
+        )
         wall = round(time.time() - t0, 2)
 
         cs = res.captcha_stage or {}
@@ -103,14 +121,16 @@ def main():
         for t, kind, detail in events:
             print(f"    +{t / 1000:6.2f}s  {kind:16s} {detail}", flush=True)
         print(f"  → ok={res.ok} path={row['path']} reason={res.reason!r}", flush=True)
-        print(f"  → captcha_ready={row['captcha_ready_s']}s  "
-              f"captcha_wait={row['captcha_wait_s']}s  "
-              f"mouse={row['mouse']}", flush=True)
+        print(
+            f"  → captcha_ready={row['captcha_ready_s']}s  "
+            f"captcha_wait={row['captcha_wait_s']}s  "
+            f"mouse={row['mouse']}",
+            flush=True,
+        )
         prev = 0
         print("  登录内部阶段:", flush=True)
         for k, v in (res.timings or {}).items():
-            print(f"    {k:16s} +{(v - prev) / 1000:6.2f}s   (累计 {v / 1000:5.2f}s)",
-                  flush=True)
+            print(f"    {k:16s} +{(v - prev) / 1000:6.2f}s   (累计 {v / 1000:5.2f}s)", flush=True)
             prev = v
 
         if i < args.rounds - 1:
@@ -121,15 +141,19 @@ def main():
     print(f"\n{'=' * 68}")
     print(f"SUMMARY mode={args.mode}  rounds={len(rows)}  成功={len(ok_rows)}")
     print(f"{'=' * 68}")
-    print(f"  {'#':>2s} {'ok':>3s} {'path':>4s} {'captcha_ready':>14s} "
-          f"{'captcha_wait':>13s} {'init':>5s} {'移动':>5s} {'轨迹点':>7s} "
-          f"{'纯等待':>6s} {'verify':>22s}")
+    print(
+        f"  {'#':>2s} {'ok':>3s} {'path':>4s} {'captcha_ready':>14s} "
+        f"{'captcha_wait':>13s} {'init':>5s} {'移动':>5s} {'轨迹点':>7s} "
+        f"{'纯等待':>6s} {'verify':>22s}"
+    )
     for r in rows:
         m = r["mouse"] or {}
-        print(f"  {r['round']:>2d} {str(r['ok']):>3s} {str(r['path']):>4s} "
-              f"{r['captcha_ready_s']:>13.2f}s {r['captcha_wait_s']:>12.2f}s "
-              f"{r['init']:>5} {m.get('moves', 0):>5} {m.get('points', 0):>7} "
-              f"{m.get('idle_waits', 0):>6} {str(r['verify_codes']):>22s}")
+        print(
+            f"  {r['round']:>2d} {str(r['ok']):>3s} {str(r['path']):>4s} "
+            f"{r['captcha_ready_s']:>13.2f}s {r['captcha_wait_s']:>12.2f}s "
+            f"{r['init']:>5} {m.get('moves', 0):>5} {m.get('points', 0):>7} "
+            f"{m.get('idle_waits', 0):>6} {str(r['verify_codes']):>22s}"
+        )
 
     if ok_rows:
         avg_cr = sum(r["captcha_ready_s"] for r in ok_rows) / len(ok_rows)
@@ -137,23 +161,24 @@ def main():
         waits = sorted(r["captcha_wait_s"] for r in ok_rows)
         med = waits[len(waits) // 2]
         print(f"\n  平均 captcha_ready = {avg_cr:.2f}s")
-        print(f"  平均 captcha_wait  = {sum(waits) / len(waits):.2f}s  "
-              f"（中位 {med:.2f}s，范围 {waits[0]:.2f}~{waits[-1]:.2f}s）")
+        print(
+            f"  平均 captcha_wait  = {sum(waits) / len(waits):.2f}s  "
+            f"（中位 {med:.2f}s，范围 {waits[0]:.2f}~{waits[-1]:.2f}s）"
+        )
         print(f"  平均 登录总耗时     = {avg_w:.2f}s")
         paths = [r["path"] for r in ok_rows]
-        print(f"  通路分布            = {paths.count('A')}×Path A / "
-              f"{paths.count('B')}×Path B")
+        print(f"  通路分布            = {paths.count('A')}×Path A / {paths.count('B')}×Path B")
         # InitCaptchaV3 #2 的到达时刻 = SDK 真正切到 CHECK_BOX 的时间点
-        t2 = [e[0] / 1000 for r in ok_rows for e in (r["events"] or [])
-              if e[1] == "Init#2"]
+        t2 = [e[0] / 1000 for r in ok_rows for e in (r["events"] or []) if e[1] == "Init#2"]
         if t2:
-            print(f"  Init#2 平均到达     = {sum(t2) / len(t2):.2f}s  "
-                  f"(范围 {min(t2):.2f}~{max(t2):.2f}s)")
+            print(
+                f"  Init#2 平均到达     = {sum(t2) / len(t2):.2f}s  "
+                f"(范围 {min(t2):.2f}~{max(t2):.2f}s)"
+            )
     print("=" * 68)
 
     if args.out:
-        Path(args.out).write_text(json.dumps(rows, ensure_ascii=False, indent=2),
-                                  encoding="utf-8")
+        Path(args.out).write_text(json.dumps(rows, ensure_ascii=False, indent=2), encoding="utf-8")
         print(f"[probe] 明细已写入 {args.out}", flush=True)
     return 0 if len(ok_rows) == len(rows) else 1
 

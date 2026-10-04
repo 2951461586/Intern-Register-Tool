@@ -20,8 +20,8 @@
 def redact_url(url: str) -> str:
     """把 URL 的 userinfo（`user:pass@`）换成 `***`，其余保留。
 
-        http://user:pass@203.0.113.30:8080  →  http://***@203.0.113.30:8080
-        http://127.0.0.1:7901               →  原样（没有 userinfo）
+    http://user:pass@203.0.113.30:8080  →  http://***@203.0.113.30:8080
+    http://127.0.0.1:7901               →  原样（没有 userinfo）
     """
     if not url or "://" not in url:
         return url or ""

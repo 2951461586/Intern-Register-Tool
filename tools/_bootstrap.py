@@ -73,4 +73,3 @@ try:
 except ImportError:
     # 没有 common 包的环境（例如只想用本文件算 ROOT）不应因此崩掉。
     pass
-

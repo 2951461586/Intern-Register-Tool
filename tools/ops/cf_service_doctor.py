@@ -126,8 +126,9 @@ def api_get(path: str, token: str, timeout: int = 60) -> tuple[int, Any]:
             return e.code, {"raw": body[:400].decode("utf-8", "replace")}
 
 
-def d1_query(sql: str, token: str, account: str, db: str,
-              timeout: int = 60) -> tuple[bool, list, dict, str | None, str | None]:
+def d1_query(
+    sql: str, token: str, account: str, db: str, timeout: int = 60
+) -> tuple[bool, list, dict, str | None, str | None]:
     """打 D1 HTTP API。
 
     返回 (ok, rows, meta, err_code, err_msg)。
@@ -155,7 +156,7 @@ def d1_query(sql: str, token: str, account: str, db: str,
     except Exception as ex:  # 网络层
         return False, [], {}, None, repr(ex)
 
-    res = (j.get("result") or [{}])
+    res = j.get("result") or [{}]
     res = res[0] if isinstance(res, list) else {}
     errs = j.get("errors") or []
     code = errs[0].get("code") if errs else None
@@ -163,8 +164,7 @@ def d1_query(sql: str, token: str, account: str, db: str,
     return ok, (res.get("results") or []), (res.get("meta") or {}), code, msg
 
 
-def gql(query: str, variables: dict, token: str,
-        timeout: int = 120) -> dict:
+def gql(query: str, variables: dict, token: str, timeout: int = 120) -> dict:
     """打 CF GraphQL。返回**解析后的响应对象**。
 
     ⚠ 返回标注 `dict` 是**契约**：CF 的 GraphQL 响应恒为对象（错误分支也
@@ -244,8 +244,10 @@ def check_worker(token: str, account: str, worker: str) -> dict:
     if st == 200:
         me = next((s for s in (j.get("result") or []) if s.get("id") == worker), None)
         if me:
-            print(f"  {OK} {worker}  modified_on={me.get('modified_on')}  "
-                  f"(北京 {bj(me.get('modified_on') or '')})")
+            print(
+                f"  {OK} {worker}  modified_on={me.get('modified_on')}  "
+                f"(北京 {bj(me.get('modified_on') or '')})"
+            )
             out["modified_on"] = me.get("modified_on")
         else:
             print(f"  {BAD} 账号下没有名为 {worker} 的 Worker")
@@ -260,7 +262,7 @@ def check_worker(token: str, account: str, worker: str) -> dict:
         for d in deps:
             when = d.get("created_on") or ""
             src = d.get("source")
-            for v in (d.get("versions") or []):
+            for v in d.get("versions") or []:
                 vid = v.get("version_id") or ""
                 flag = ""
                 if vid in seen:
@@ -286,7 +288,8 @@ def check_d1_usage(token: str, account: str, db: str, hours: int) -> dict:
         print(f"  {BAD} GraphQL: {json.dumps(g['errors'], ensure_ascii=False)[:220]}")
         return {}
     rows = (((g.get("data") or {}).get("viewer") or {}).get("accounts") or [{}])[0].get(
-        "d1AnalyticsAdaptiveGroups") or []
+        "d1AnalyticsAdaptiveGroups"
+    ) or []
     today = str(now.date())
     res: dict = {"days": []}
     for r in rows:
@@ -303,10 +306,20 @@ def check_d1_usage(token: str, account: str, db: str, hours: int) -> dict:
             mark = f"  {WARN} 读额度 >70%"
         if pw >= 80:
             mark += f"  {WARN} 写额度 {pw:.0f}%"
-        print(f"  {d}  读 {rr:>12,} ({pr:5.1f}%)  写 {rw:>8,} ({pw:5.1f}%)  "
-              f"读次数 {rq:>8,}  均 {rr // rq if rq else 0:>6,} 行/次{mark}")
-        res["days"].append({"date": d, "rowsRead": rr, "rowsWritten": rw,
-                            "readQueries": rq, "pct_read": round(pr, 2), "pct_write": round(pw, 2)})
+        print(
+            f"  {d}  读 {rr:>12,} ({pr:5.1f}%)  写 {rw:>8,} ({pw:5.1f}%)  "
+            f"读次数 {rq:>8,}  均 {rr // rq if rq else 0:>6,} 行/次{mark}"
+        )
+        res["days"].append(
+            {
+                "date": d,
+                "rowsRead": rr,
+                "rowsWritten": rw,
+                "readQueries": rq,
+                "pct_read": round(pr, 2),
+                "pct_write": round(pw, 2),
+            }
+        )
         if d == today:
             res["today"] = res["days"][-1]
 
@@ -321,7 +334,8 @@ def check_d1_usage(token: str, account: str, db: str, hours: int) -> dict:
     """
     g = gql(q2, {"a": account, "db": db, "s": s_iso, "e": e_iso}, token)
     rows = (((g.get("data") or {}).get("viewer") or {}).get("accounts") or [{}])[0].get(
-        "d1AnalyticsAdaptiveGroups") or []
+        "d1AnalyticsAdaptiveGroups"
+    ) or []
     if rows:
         print(f"\n  {INFO} 小时粒度（最近 {hours}h，北京时间为准）—— 均行数突然变大 = 全表扫复活:")
         peak = max(((r.get("sum") or {}).get("rowsRead") or 0) for r in rows) or 1
@@ -362,7 +376,8 @@ def check_worker_invocations(token: str, account: str, worker: str, hours: int) 
         print(f"  {BAD} GraphQL: {json.dumps(g['errors'], ensure_ascii=False)[:220]}")
         return {}
     rows = (((g.get("data") or {}).get("viewer") or {}).get("accounts") or [{}])[0].get(
-        "workersInvocationsAdaptive") or []
+        "workersInvocationsAdaptive"
+    ) or []
     agg: dict = {}
     for r in rows:
         d = r["dimensions"]
@@ -376,9 +391,11 @@ def check_worker_invocations(token: str, account: str, worker: str, hours: int) 
         tag = ""
         if parts.get("exceededResources"):
             tag = "  ← exceededResources = CPU/内存超限，查是不是在扫全表"
-        print(f"  {h} (北京 {bj(h)})  " +
-              "  ".join(f"{k}={v:,}" for k, v in sorted(parts.items())) +
-              (f"  失败={bad:,}{tag}" if bad else ""))
+        print(
+            f"  {h} (北京 {bj(h)})  "
+            + "  ".join(f"{k}={v:,}" for k, v in sorted(parts.items()))
+            + (f"  失败={bad:,}{tag}" if bad else "")
+        )
         out["hourly"].append({"hour": h, **parts, "failed": bad})
     return out
 
@@ -392,7 +409,10 @@ def check_d1_probe(token: str, account: str, db: str) -> dict:
     print("\n── 5. D1 探针（判定配额是否正在拦截）─────────────────────")
     cases = [
         ("不碰表（SELECT 1）", "SELECT 1 AS x"),
-        ("索引查找，0 命中", "SELECT id FROM emails WHERE to_address = 'doctor-none@nowhere.test' LIMIT 5"),
+        (
+            "索引查找，0 命中",
+            "SELECT id FROM emails WHERE to_address = 'doctor-none@nowhere.test' LIMIT 5",
+        ),
         ("读 1 行", "SELECT id FROM emails ORDER BY id DESC LIMIT 1"),
     ]
     out = {"cases": []}
@@ -401,19 +421,21 @@ def check_d1_probe(token: str, account: str, db: str) -> dict:
         ok, rows, meta, code, msg = d1_query(sql, token, account, db)
         rr = meta.get("rows_read")
         flag = OK if ok else BAD
-        print(f"  {flag} rows_read={str(rr):>6}  {label:<20} " +
-              (f"err={code}" if code else ""))
+        print(f"  {flag} rows_read={str(rr):>6}  {label:<20} " + (f"err={code}" if code else ""))
         if not ok and code == 7500:
             blocked += 1
         out["cases"].append({"label": label, "ok": ok, "rows_read": rr, "err": code})
     out["quota_blocking"] = blocked > 0
     if blocked:
         print(f"  {BAD} D1 正在用 7500 拒绝读取 → 今日额度已爆，等 UTC 00:00（北京 08:00）重置")
-        nxt = dt.datetime.now(dt.UTC).replace(hour=0, minute=0, second=0, microsecond=0) \
-            + dt.timedelta(days=1)
-        print(f"      预计恢复：{nxt.strftime('%Y-%m-%d %H:%M')} UTC = "
-              f"{(nxt + dt.timedelta(hours=8)).strftime('%Y-%m-%d %H:%M')} 北京 "
-              f"（约 {(nxt - dt.datetime.now(dt.UTC)).total_seconds() / 3600:.1f} 小时后）")
+        nxt = dt.datetime.now(dt.UTC).replace(
+            hour=0, minute=0, second=0, microsecond=0
+        ) + dt.timedelta(days=1)
+        print(
+            f"      预计恢复：{nxt.strftime('%Y-%m-%d %H:%M')} UTC = "
+            f"{(nxt + dt.timedelta(hours=8)).strftime('%Y-%m-%d %H:%M')} 北京 "
+            f"（约 {(nxt - dt.datetime.now(dt.UTC)).total_seconds() / 3600:.1f} 小时后）"
+        )
     else:
         print(f"  {OK} 未发现 7500 —— 读取正常")
     return out
@@ -424,8 +446,8 @@ def check_endpoints(base: str, admin_token: str) -> dict:
     probes = [
         ("/health", False),
         ("/api/domains", False),
-        ("/api/inbox?email=doctor-none@nowhere.test", False),   # 走索引，0 命中
-        ("/admin/all?limit=1", True),                            # 要读行
+        ("/api/inbox?email=doctor-none@nowhere.test", False),  # 走索引，0 命中
+        ("/admin/all?limit=1", True),  # 要读行
     ]
     out = {"probes": []}
     for path, need_tok in probes:
@@ -474,11 +496,15 @@ def main() -> int:
     print("═" * 74)
     print("  邮箱 Worker / D1 服务端体检")
     print(f"  账号 {args.account} / Worker {args.worker} / 库 {args.db}")
-    print(f"  报告时间（UTC）{dt.datetime.now(dt.UTC):%Y-%m-%d %H:%M:%S}"
-          f"  = 北京 {(dt.datetime.now(dt.UTC) + dt.timedelta(hours=8)):%Y-%m-%d %H:%M:%S}")
+    print(
+        f"  报告时间（UTC）{dt.datetime.now(dt.UTC):%Y-%m-%d %H:%M:%S}"
+        f"  = 北京 {(dt.datetime.now(dt.UTC) + dt.timedelta(hours=8)):%Y-%m-%d %H:%M:%S}"
+    )
     if not full:
-        print(f"  {WARN} 未提供 CF_API_TOKEN —— 只跑「端点直连」部分；"
-              f"D1 用量 / 部署历史 / 配额探针会跳过。")
+        print(
+            f"  {WARN} 未提供 CF_API_TOKEN —— 只跑「端点直连」部分；"
+            f"D1 用量 / 部署历史 / 配额探针会跳过。"
+        )
     print("═" * 74)
 
     report: dict = {"mode": "full" if full else "endpoints_only"}
@@ -502,7 +528,9 @@ def main() -> int:
     if full:
         report["worker"] = check_worker(token, args.account, args.worker)
         report["d1_usage"] = check_d1_usage(token, args.account, args.db, args.hours)
-        report["invocations"] = check_worker_invocations(token, args.account, args.worker, args.hours)
+        report["invocations"] = check_worker_invocations(
+            token, args.account, args.worker, args.hours
+        )
         report["d1_probe"] = check_d1_probe(token, args.account, args.db)
 
     report["endpoints"] = check_endpoints(args.base, admin)
@@ -522,7 +550,9 @@ def main() -> int:
 
         if quota:
             print(f"  {BAD} 服务当前【不可用】：D1 免费读取额度已用尽（今日 {pct:.1f}%），")
-            print("     任何需要读 ≥1 行的查询都会被拒（错误码 7500），Worker 里没兜住 → 客户端看到 500。")
+            print(
+                "     任何需要读 ≥1 行的查询都会被拒（错误码 7500），Worker 里没兜住 → 客户端看到 500。"
+            )
             print("     恢复时间：UTC 00:00 = 北京 08:00（自动重置，无需操作）。")
             print(f"  {INFO} 注意：这不代表「没修好」。要判断代码是否已修，看第 3 节小时粒度的")
             print("     「均行数」—— 修复后应回落到几十行/次，而不是 1,000+。")
@@ -541,21 +571,27 @@ def main() -> int:
         inv = (report.get("invocations") or {}).get("hourly") or []
 
         def _rate(rows):
-            r = sum(sum(v for k, v in h.items()
-                        if isinstance(v, int) and k not in ("hour", "failed")) for h in rows)
+            r = sum(
+                sum(v for k, v in h.items() if isinstance(v, int) and k not in ("hour", "failed"))
+                for h in rows
+            )
             f = sum(h.get("failed", 0) for h in rows)
             return r, f
 
         tot_r, tot_f = _rate(inv)
         rec_r, rec_f = _rate(inv[-2:] if len(inv) >= 2 else inv)
         if rec_r and rec_f / rec_r > 0.3:
-            print(f"  {WARN} 最近 2h 失败率 {100 * rec_f / rec_r:.0f}%（{rec_f:,}/{rec_r:,}）"
-                  f" —— 此时「均行数」已被大量被拒查询稀释，**不能再当健康判据**。")
+            print(
+                f"  {WARN} 最近 2h 失败率 {100 * rec_f / rec_r:.0f}%（{rec_f:,}/{rec_r:,}）"
+                f" —— 此时「均行数」已被大量被拒查询稀释，**不能再当健康判据**。"
+            )
             print("     必须和失败率成对看：均行数小 + 失败率低 = 真健康；")
             print("     均行数小 + 失败率高 = 大部分查询压根没跑起来。")
         elif tot_r and tot_f / tot_r > 0.3:
-            print(f"  {INFO} 窗口内整体失败率 {100 * tot_f / tot_r:.0f}%（{tot_f:,}/{tot_r:,}），"
-                  f"但最近 2h 只有 {100 * rec_f / rec_r:.0f}% —— 失败集中在更早的小时，属历史，不是现状。")
+            print(
+                f"  {INFO} 窗口内整体失败率 {100 * tot_f / tot_r:.0f}%（{tot_f:,}/{tot_r:,}），"
+                f"但最近 2h 只有 {100 * rec_f / rec_r:.0f}% —— 失败集中在更早的小时，属历史，不是现状。"
+            )
     else:
         # 没 token：只能看端点。`/admin/all?limit=1` 是决定性判据 ——
         # 它必须读 ≥1 行，所以配额一旦爆掉它必然 500。
@@ -566,8 +602,10 @@ def main() -> int:
             print(f"  {BAD} 端点仍未恢复：/admin/all?limit=1 返回 {list_status or 'ERR'}。")
             print("     它必须读 ≥1 行 —— 被拒通常意味着 D1 每日读取额度还没重置。")
             rc = 1
-        print(f"  {WARN} 本次没做 D1 用量核对（缺 CF_API_TOKEN），"
-              f"无法区分「配额」还是「别的 500 原因」。")
+        print(
+            f"  {WARN} 本次没做 D1 用量核对（缺 CF_API_TOKEN），"
+            f"无法区分「配额」还是「别的 500 原因」。"
+        )
         print("     要拿 D1 用量/部署历史/配额探针：export CF_API_TOKEN=... 再跑一次。")
 
     if args.json_out:

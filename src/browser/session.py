@@ -47,8 +47,9 @@ def _launch_kwargs(headless: bool, chrome_args=None, *, executable_path: str) ->
     )
 
 
-def _retry_loop(run_once, *, attempts: int, cooldown: float, verbose: bool,
-                retry_hint: str) -> LoginResult:
+def _retry_loop(
+    run_once, *, attempts: int, cooldown: float, verbose: bool, retry_hint: str
+) -> LoginResult:
     """失败重试的公共骨架。
 
     `run_once(tag) -> LoginResult` 由调用方提供，它自己负责浏览器的创建或复用 ——
@@ -77,8 +78,11 @@ def _retry_loop(run_once, *, attempts: int, cooldown: float, verbose: bool,
         if i < attempts - 1:
             wait = cooldown * (i + 1) + random.uniform(0, 5)
             if verbose:
-                print(f"    [login] 第 {i + 1} 次失败（{res.reason}），"
-                      f"冷却 {wait:.0f}s 后{retry_hint}", flush=True)
+                print(
+                    f"    [login] 第 {i + 1} 次失败（{res.reason}），"
+                    f"冷却 {wait:.0f}s 后{retry_hint}",
+                    flush=True,
+                )
             time.sleep(wait)
     return last
 
@@ -109,8 +113,7 @@ class BrowserSession:
       `BrowserSettings.from_config(config)`，见 `settings.py`。
     """
 
-    def __init__(self, headless: bool = True, chrome_args=None, *,
-                 settings: BrowserSettings):
+    def __init__(self, headless: bool = True, chrome_args=None, *, settings: BrowserSettings):
         self.headless = headless
         self.chrome_args = chrome_args
         self.settings = settings
@@ -124,8 +127,10 @@ class BrowserSession:
         t0 = time.time()
         self._pw = sync_playwright().start()
         self._browser = self._pw.chromium.launch(
-            **_launch_kwargs(self.headless, self.chrome_args,
-                             executable_path=self.settings.chrome_path))
+            **_launch_kwargs(
+                self.headless, self.chrome_args, executable_path=self.settings.chrome_path
+            )
+        )
         self.launch_ms = round((time.time() - t0) * 1000)
         return self
 
@@ -141,16 +146,32 @@ class BrowserSession:
                 self._pw.stop()
         return False
 
-    def login(self, account: str, password: str, *, timeout: int = 150,
-              attempts: int = 3, cooldown: float = 15.0,
-              screenshot_prefix: str | None = None, verbose: bool = False) -> LoginResult:
+    def login(
+        self,
+        account: str,
+        password: str,
+        *,
+        timeout: int = 150,
+        attempts: int = 3,
+        cooldown: float = 15.0,
+        screenshot_prefix: str | None = None,
+        verbose: bool = False,
+    ) -> LoginResult:
         """在复用的浏览器上登录，失败换新 context 重试。"""
-        def run_once(tag):
-            return _run_attempt(self._browser, account=account, password=password,
-                                headless=self.headless, timeout=timeout,
-                                settings=self.settings,
-                                screenshot_prefix=screenshot_prefix,
-                                verbose=verbose, tag=tag)
 
-        return _retry_loop(run_once, attempts=attempts, cooldown=cooldown,
-                           verbose=verbose, retry_hint="重试")
+        def run_once(tag):
+            return _run_attempt(
+                self._browser,
+                account=account,
+                password=password,
+                headless=self.headless,
+                timeout=timeout,
+                settings=self.settings,
+                screenshot_prefix=screenshot_prefix,
+                verbose=verbose,
+                tag=tag,
+            )
+
+        return _retry_loop(
+            run_once, attempts=attempts, cooldown=cooldown, verbose=verbose, retry_hint="重试"
+        )

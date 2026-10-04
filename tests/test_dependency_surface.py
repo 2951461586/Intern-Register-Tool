@@ -89,11 +89,7 @@ def _first_party_tops() -> set[str]:
       （`common/`）移出 `src/`，它就会被当成第三方包混进 `found`，
       报出一个和真因无关的失败。
     """
-    return {
-        p.name
-        for p in ROOT.iterdir()
-        if p.is_dir() and (p / "__init__.py").is_file()
-    }
+    return {p.name for p in ROOT.iterdir() if p.is_dir() and (p / "__init__.py").is_file()}
 
 
 def _resolve_relative(pkg_parts: list[str], level: int, module: str | None) -> str:
@@ -151,8 +147,7 @@ def _module_level_imports(stmts: list[ast.stmt]) -> list[ast.stmt]:
     return out
 
 
-def _collect(path: Path, chain: tuple[str, ...], found: dict[str, str],
-             visited: set[str]) -> None:
+def _collect(path: Path, chain: tuple[str, ...], found: dict[str, str], visited: set[str]) -> None:
     """递归扫描一个文件的**模块级** import。
 
     `found` 收集「第三方包名 → 第一条把它拉进来的 import 链」（用于失败信息）。
@@ -164,7 +159,7 @@ def _collect(path: Path, chain: tuple[str, ...], found: dict[str, str],
 
     try:
         tree = ast.parse(path.read_text(encoding="utf-8", errors="replace"))
-    except (SyntaxError, OSError):                         # pragma: no cover
+    except (SyntaxError, OSError):  # pragma: no cover
         return
 
     pkg_parts = _pkg_parts(path)
@@ -275,9 +270,8 @@ def test_playwright_never_enters_the_test_chain():
     found = _third_party_of_test_chain()
     leaked = sorted(FORBIDDEN & set(found))
 
-    assert not leaked, (
-        "重依赖进入了测试链（应改为函数体内延迟 import）：\n"
-        + "\n".join(f"  ✗ {pkg}   ← {found[pkg]}" for pkg in leaked)
+    assert not leaked, "重依赖进入了测试链（应改为函数体内延迟 import）：\n" + "\n".join(
+        f"  ✗ {pkg}   ← {found[pkg]}" for pkg in leaked
     )
 
 
@@ -331,8 +325,7 @@ def test_the_scanner_itself_detects_a_planted_dependency(tmp_path):
     )
     assert "os" not in found, "扫描器把 stdlib 误报成第三方"
     assert "also_should_not_be_seen" not in found, (
-        "扫描器把**函数体内**的 import 也算进来了 —— "
-        "那会把 playwright 之类的延迟 import 变成假阳性"
+        "扫描器把**函数体内**的 import 也算进来了 —— 那会把 playwright 之类的延迟 import 变成假阳性"
     )
     assert "typing_only_pkg" not in found, (
         "扫描器把 `if TYPE_CHECKING:` 块里的 import 算进来了 —— "
@@ -417,15 +410,12 @@ def _imports_in_source(src: str, pkg_parts: list[str]) -> list[tuple[int, str]]:
             else:
                 base = node.module or ""
             out.append((node.lineno, base))
-            out += [(node.lineno, f"{base}.{a.name}" if base else a.name)
-                    for a in node.names]
+            out += [(node.lineno, f"{base}.{a.name}" if base else a.name) for a in node.names]
     return out
 
 
 def _all_imports(path: Path) -> list[tuple[int, str]]:
-    return _imports_in_source(
-        path.read_text(encoding="utf-8", errors="replace"), _pkg_parts(path)
-    )
+    return _imports_in_source(path.read_text(encoding="utf-8", errors="replace"), _pkg_parts(path))
 
 
 def test_the_all_imports_scanner_sees_function_level_relative_imports():
@@ -434,12 +424,15 @@ def test_the_all_imports_scanner_sees_function_level_relative_imports():
     ⚠ 复用 `_module_level_imports`（那个刻意跳过函数体）来写这条规则的话，
       `waf.py` 的回边会被静默漏掉 —— 边界断言就变成了假绿。
     """
-    mods = [m for _, m in _imports_in_source(
-        "def f():\n    from .. import config\n", ["src", "browser"])]
+    mods = [
+        m
+        for _, m in _imports_in_source("def f():\n    from .. import config\n", ["src", "browser"])
+    ]
     assert "src.config" in mods, "扫描器漏掉了函数体内的相对 import"
 
-    mods2 = [m for _, m in _imports_in_source(
-        "from .constants import CHROME_ARGS\n", ["src", "browser"])]
+    mods2 = [
+        m for _, m in _imports_in_source("from .constants import CHROME_ARGS\n", ["src", "browser"])
+    ]
     assert "src.browser.constants" in mods2
     assert "src.browser.constants.CHROME_ARGS" in mods2
 
@@ -496,7 +489,7 @@ def test_config_module_stays_a_leaf():
     就是一条可传递的**真环**。
     """
     cfg = ROOT / "common" / "config.py"
-    assert cfg.is_file(), f"共享叶子不见了：{_rel(cfg)}" 
+    assert cfg.is_file(), f"共享叶子不见了：{_rel(cfg)}"
     offenders: list[str] = []
     for line, mod in _all_imports(cfg):
         top = mod.split(".")[0]

@@ -13,10 +13,19 @@ from .state import LoginResult
 # ────────────────────────────────────────────────────────────────
 # 单账号入口（自带浏览器生命周期）
 # ────────────────────────────────────────────────────────────────
-def login(account: str, password: str, *, headless: bool = True,
-          timeout: int = 150, attempts: int = 3, cooldown: float = 15.0,
-          screenshot_prefix: str | None = None, verbose: bool = False,
-          chrome_args=None, settings: BrowserSettings) -> LoginResult:
+def login(
+    account: str,
+    password: str,
+    *,
+    headless: bool = True,
+    timeout: int = 150,
+    attempts: int = 3,
+    cooldown: float = 15.0,
+    screenshot_prefix: str | None = None,
+    verbose: bool = False,
+    chrome_args=None,
+    settings: BrowserSettings,
+) -> LoginResult:
     """用真实浏览器登录 SSO，返回 JWT。
 
     单账号场景用这个；批量场景请用 `BrowserSession` 复用浏览器进程。
@@ -47,19 +56,26 @@ def login(account: str, password: str, *, headless: bool = True,
     def run_once(tag):
         with sync_playwright() as p:
             browser = p.chromium.launch(
-                **_launch_kwargs(headless, chrome_args,
-                                 executable_path=settings.chrome_path))
+                **_launch_kwargs(headless, chrome_args, executable_path=settings.chrome_path)
+            )
             try:
-                return _run_attempt(browser, account=account, password=password,
-                                    headless=headless, timeout=timeout,
-                                    settings=settings,
-                                    screenshot_prefix=screenshot_prefix,
-                                    verbose=verbose, tag=tag)
+                return _run_attempt(
+                    browser,
+                    account=account,
+                    password=password,
+                    headless=headless,
+                    timeout=timeout,
+                    settings=settings,
+                    screenshot_prefix=screenshot_prefix,
+                    verbose=verbose,
+                    tag=tag,
+                )
             finally:
                 try:
                     browser.close()
                 except Exception:
                     pass
 
-    return _retry_loop(run_once, attempts=attempts, cooldown=cooldown,
-                       verbose=verbose, retry_hint="换新会话重试")
+    return _retry_loop(
+        run_once, attempts=attempts, cooldown=cooldown, verbose=verbose, retry_hint="换新会话重试"
+    )

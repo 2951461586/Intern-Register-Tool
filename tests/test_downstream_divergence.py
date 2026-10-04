@@ -54,16 +54,20 @@ class _Spy:
     """一次运行的调用账本。"""
 
     def __init__(self):
-        self.dc_calls = []    # `dc.<method>()` 的名字，按调用顺序
-        self.dc_ctor = []     # `DiscoveryClient(**kw)` 的 kw
-        self.ak_calls = []    # `apikey.<fn>()` 的名字，按调用顺序
+        self.dc_calls = []  # `dc.<method>()` 的名字，按调用顺序
+        self.dc_ctor = []  # `DiscoveryClient(**kw)` 的 kw
+        self.ak_calls = []  # `apikey.<fn>()` 的名字，按调用顺序
 
 
 def _login_result():
     """两边都只需要这几个属性（A 走 `session.login()`，B 走 `BrowserSession.login()`）。"""
     return SimpleNamespace(
-        ok=True, jwt="jwt-xyz", cookies={"sid": "c"},
-        timings={"total": 1}, captcha_stage={"path": "A"}, reason="",
+        ok=True,
+        jwt="jwt-xyz",
+        cookies={"sid": "c"},
+        timings={"total": 1},
+        captcha_stage={"path": "A"},
+        reason="",
     )
 
 
@@ -120,8 +124,7 @@ def _install(monkeypatch, spy, *, has_received):
 
         def balance(self):
             spy.dc_calls.append("balance")
-            return {"available_credits": "10.000000", "rpm_limit": 60,
-                    "usage_windows": {}}
+            return {"available_credits": "10.000000", "rpm_limit": 60, "usage_windows": {}}
 
         def list_keys(self):
             spy.dc_calls.append("list_keys")
@@ -129,14 +132,16 @@ def _install(monkeypatch, spy, *, has_received):
 
         def create_key(self, name="default"):
             spy.dc_calls.append("create_key")
-            return SimpleNamespace(id="kid", name=name, key="sk-new-plain",
-                                   masked_key="sk-***", status="active")
+            return SimpleNamespace(
+                id="kid", name=name, key="sk-new-plain", masked_key="sk-***", status="active"
+            )
 
         def ensure_key(self, name="default"):
             spy.dc_calls.append("ensure_key")
             # 命中已有 key 时列表接口不返回明文 ⇒ `key` 是空串（见 B 的 docstring）。
-            return SimpleNamespace(id="kid", name=name, key="",
-                                   masked_key="sk-***", status="active")
+            return SimpleNamespace(
+                id="kid", name=name, key="", masked_key="sk-***", status="active"
+            )
 
     def _dc(**kw):
         return _FakeDiscovery(**kw)
@@ -148,12 +153,21 @@ def _install(monkeypatch, spy, *, has_received):
         def _f(*a, **kw):
             spy.ak_calls.append(name)
             return ret
+
         return _f
 
     monkeypatch.setattr(apikey, "wait_until_active", _ak("wait_until_active", True))
     monkeypatch.setattr(apikey, "list_models", _ak("list_models", ["m1", "m2"]))
-    monkeypatch.setattr(apikey, "chat", _ak("chat", SimpleNamespace(
-        ok=True, truncated=False, text="成功", usage={"total_tokens": 7}, error="")))
+    monkeypatch.setattr(
+        apikey,
+        "chat",
+        _ak(
+            "chat",
+            SimpleNamespace(
+                ok=True, truncated=False, text="成功", usage={"total_tokens": 7}, error=""
+            ),
+        ),
+    )
 
     monkeypatch.setattr(browser, "BrowserSession", _FakeSession)
 
@@ -203,8 +217,7 @@ def _run_a(monkeypatch, spy, *, verify, has_received):
     """驱动 A：`pipeline.stage_login_key`（`session=` 复用路径，不起浏览器）。"""
     _install(monkeypatch, spy, has_received=has_received)
     rec = pipeline.AccountRecord(email="a@example.com", password="pw")
-    ok = pipeline.stage_login_key(rec, session=_FakeSession(), verify=verify,
-                                  log=lambda _m: None)
+    ok = pipeline.stage_login_key(rec, session=_FakeSession(), verify=verify, log=lambda _m: None)
     assert ok, f"A 没走通：{rec.error!r}"
     return rec
 
@@ -212,8 +225,13 @@ def _run_a(monkeypatch, spy, *, verify, has_received):
 def _run_b(run_one, monkeypatch, spy, *, create, has_received):
     """驱动 B：`run_downstream.run_one`。"""
     _install(monkeypatch, spy, has_received=has_received)
-    out = run_one({"email": "a@example.com", "password": "pw"}, headless=True,
-                  create=create, key_name="default", log=lambda _m: None)
+    out = run_one(
+        {"email": "a@example.com", "password": "pw"},
+        headless=True,
+        create=create,
+        key_name="default",
+        log=lambda _m: None,
+    )
     assert out.get("downstream") == "ok", f"B 没走通：{out.get('downstream')!r}"
     return out
 
@@ -321,6 +339,8 @@ def test_subjects_are_the_real_implementations(run_one):
     ⚠ 没有这条，将来有人把 `_load_downstream_module` 改成加载一个替身，
       上面所有"两边一致"的断言会变成对着空气断言。
     """
-    assert Path(run_one.__code__.co_filename).resolve() == (
-        REPO / "tools" / "run_downstream.py").resolve()
+    assert (
+        Path(run_one.__code__.co_filename).resolve()
+        == (REPO / "tools" / "run_downstream.py").resolve()
+    )
     assert pipeline.stage_login_key.__module__ == "src.pipeline"

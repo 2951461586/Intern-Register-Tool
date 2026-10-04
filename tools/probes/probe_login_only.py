@@ -79,7 +79,7 @@ def load_accounts(csv_path: Path, offset: int, count: int) -> tuple:
     否则得把同一个文件再读一遍。
     """
     rows = read_rows(csv_path)
-    accts = [(r["email"], r["password"]) for r in rows[offset:offset + count]]
+    accts = [(r["email"], r["password"]) for r in rows[offset : offset + count]]
     return accts, rows
 
 
@@ -97,28 +97,31 @@ def probe_discovery(jwt: str, cookies: dict) -> dict:
     out = {}
     try:
         dc = DiscoveryClient(jwt=jwt, cookies=cookies)
-    except Exception as ex:                                   # noqa: BLE001
+    except Exception as ex:  # noqa: BLE001
         return {"error": f"client init: {ex}"[:120]}
-    for name, fn in (("user_info", dc.get_user_info),
-                     ("grant_status", dc.free_grant_status),
-                     ("balance", dc.balance),
-                     ("list_keys", dc.list_keys)):
+    for name, fn in (
+        ("user_info", dc.get_user_info),
+        ("grant_status", dc.free_grant_status),
+        ("balance", dc.balance),
+        ("list_keys", dc.list_keys),
+    ):
         t = time.time()
         try:
             # `fn` 是异质的调用表（dict / list 两种返回），`Any` 是**诚实的**
             # 类型：真实类型取决于 `name`，下面两个分支各自才知道。
             v: Any = fn()
             if name == "balance":
-                out[name] = {"ok": True, "ms": round((time.time() - t) * 1000),
-                             "credits": str(v.get("available_credits", ""))}
+                out[name] = {
+                    "ok": True,
+                    "ms": round((time.time() - t) * 1000),
+                    "credits": str(v.get("available_credits", "")),
+                }
             elif name == "list_keys":
-                out[name] = {"ok": True, "ms": round((time.time() - t) * 1000),
-                             "n": len(v)}
+                out[name] = {"ok": True, "ms": round((time.time() - t) * 1000), "n": len(v)}
             else:
                 out[name] = {"ok": True, "ms": round((time.time() - t) * 1000)}
-        except Exception as ex:                               # noqa: BLE001
-            out[name] = {"ok": False, "ms": round((time.time() - t) * 1000),
-                         "error": str(ex)[:120]}
+        except Exception as ex:  # noqa: BLE001
+            out[name] = {"ok": False, "ms": round((time.time() - t) * 1000), "error": str(ex)[:120]}
     return out
 
 
@@ -130,13 +133,22 @@ def main() -> int:
     ap.add_argument("--headless", action="store_true", default=True)
     ap.add_argument("--headful", dest="headless", action="store_false")
     ap.add_argument("--csv", default=str(DEFAULT_CSV), help="账号来源 CSV")
-    ap.add_argument("--ledger", default=str(DEFAULT_LEDGER),
-                    help="权威台账（只用来检查账号池是否过期，不参与测试）")
-    ap.add_argument("--with-discovery", action="store_true",
-                    help="登录后跑一遍**只读**的 Stage 4（用户信息/额度/余额/key 列表）")
+    ap.add_argument(
+        "--ledger",
+        default=str(DEFAULT_LEDGER),
+        help="权威台账（只用来检查账号池是否过期，不参与测试）",
+    )
+    ap.add_argument(
+        "--with-discovery",
+        action="store_true",
+        help="登录后跑一遍**只读**的 Stage 4（用户信息/额度/余额/key 列表）",
+    )
     ap.add_argument("--out", default=None, help="结果 JSON 落盘路径")
-    ap.add_argument("--allow-partial", action="store_true",
-                    help="允许快照只覆盖台账的一部分（默认覆盖不足会返回退出码 3）")
+    ap.add_argument(
+        "--allow-partial",
+        action="store_true",
+        help="允许快照只覆盖台账的一部分（默认覆盖不足会返回退出码 3）",
+    )
     args = ap.parse_args()
 
     accts, snapshot_rows = load_accounts(Path(args.csv), args.offset, args.count)
@@ -147,28 +159,30 @@ def main() -> int:
     # 5 天前的 53 行快照里取的，而台账里已经有 417 个账号 ——
     # 登录本身没问题，但**结论的适用范围**被静默限死了。
     ledger_n, csv_n, missing = ledger.account_coverage(
-        ledger.load_existing(args.ledger), {r["email"] for r in snapshot_rows})
+        ledger.load_existing(args.ledger), {r["email"] for r in snapshot_rows}
+    )
     # 与 `check_keys_alive.py` 同一道护栏的另一半 —— 判据同样在 `src/ledger.py`，
     # 这里只接线。两边形状必须一致，否则"只改一半"会让其中一边静默失效。
     gap_rc = ledger.coverage_exit_code(missing, allow_partial=args.allow_partial)
-    coverage = ledger.coverage_block(ledger_n, csv_n, missing,
-                                     ledger=args.ledger, snapshot=args.csv)
+    coverage = ledger.coverage_block(
+        ledger_n, csv_n, missing, ledger=args.ledger, snapshot=args.csv
+    )
     if missing:
-        print(f"⚠ 账号来源快照**落后于台账**：台账 {ledger_n} 个账号 / 快照 {csv_n} 个，"
-              f"本次只从快照取号，**够不到**台账里多出的 {len(missing)} 个。")
+        print(
+            f"⚠ 账号来源快照**落后于台账**：台账 {ledger_n} 个账号 / 快照 {csv_n} 个，"
+            f"本次只从快照取号，**够不到**台账里多出的 {len(missing)} 个。"
+        )
         print(f"    快照：{args.csv}")
         print(f"    台账：{args.ledger}")
         print("    ⇒ 结论只对快照里那批账号成立，别当成'全量账号都能登录'。")
         if gap_rc:
-            print(f"    ⇒ 退出码 {gap_rc}（护栏触发）。"
-                  f"确实只想测一个子集请加 --allow-partial。")
+            print(f"    ⇒ 退出码 {gap_rc}（护栏触发）。确实只想测一个子集请加 --allow-partial。")
 
     if not accts:
         print(f"✗ 从 {args.csv} 取不到账号（offset={args.offset} count={args.count}）")
         return 1
 
-    print(f"登录测试：{len(accts)} 个账号 / workers={args.workers} / "
-          f"headless={args.headless}")
+    print(f"登录测试：{len(accts)} 个账号 / workers={args.workers} / headless={args.headless}")
     print(f"账号来源 {args.csv}（offset={args.offset}）")
     for e, _ in accts:
         print(f"  - {e}")
@@ -187,8 +201,7 @@ def main() -> int:
     def worker(wid: int):
         try:
             with BrowserSession(headless=args.headless, settings=bs) as sess:
-                print(f"[worker {wid + 1}] browser ready ({sess.launch_ms}ms)",
-                      flush=True)
+                print(f"[worker {wid + 1}] browser ready ({sess.launch_ms}ms)", flush=True)
                 while True:
                     try:
                         email, pw = q.get_nowait()
@@ -204,26 +217,40 @@ def main() -> int:
                         jwt_len = len(res.jwt)
                         if ok and args.with_discovery:
                             disc = probe_discovery(res.jwt, res.cookies)
-                    except Exception as ex:                   # noqa: BLE001
+                    except Exception as ex:  # noqa: BLE001
                         ok, reason, path, detail, jwt_len = (
-                            False, f"exception: {str(ex)[:120]}", "", {}, 0)
+                            False,
+                            f"exception: {str(ex)[:120]}",
+                            "",
+                            {},
+                            0,
+                        )
                     dt = time.time() - t0
-                    rec = {"email": email, "ok": ok, "seconds": round(dt, 2),
-                           "captcha_path": path, "reason": reason or "",
-                           "jwt_len": jwt_len, "worker": wid + 1,
-                           "timings": detail, "discovery": disc}
+                    rec = {
+                        "email": email,
+                        "ok": ok,
+                        "seconds": round(dt, 2),
+                        "captcha_path": path,
+                        "reason": reason or "",
+                        "jwt_len": jwt_len,
+                        "worker": wid + 1,
+                        "timings": detail,
+                        "discovery": disc,
+                    }
                     with lock:
                         out.append(rec)
-                        print(f"  {'✓' if ok else '✗'} {email:38s} "
-                              f"{dt:6.2f}s  path={path or '-'}  "
-                              f"{(reason or '')[:60]}", flush=True)
-        except Exception as ex:                               # noqa: BLE001
+                        print(
+                            f"  {'✓' if ok else '✗'} {email:38s} "
+                            f"{dt:6.2f}s  path={path or '-'}  "
+                            f"{(reason or '')[:60]}",
+                            flush=True,
+                        )
+        except Exception as ex:  # noqa: BLE001
             with lock:
                 print(f"[worker {wid + 1}] 会话异常: {ex}", flush=True)
 
     t_start = time.time()
-    ts = [threading.Thread(target=worker, args=(i,), daemon=True)
-          for i in range(args.workers)]
+    ts = [threading.Thread(target=worker, args=(i,), daemon=True) for i in range(args.workers)]
     for t in ts:
         t.start()
     for t in ts:
@@ -237,12 +264,16 @@ def main() -> int:
         paths[r["captcha_path"] or "-"] = paths.get(r["captcha_path"] or "-", 0) + 1
 
     print(f"\n{'=' * 72}")
-    print(f"登录结果：{len(ok)}/{len(out)} 成功   总耗时 {wall:.1f}s "
-          f"= {wall / max(len(out), 1):.1f}s / 账号")
+    print(
+        f"登录结果：{len(ok)}/{len(out)} 成功   总耗时 {wall:.1f}s "
+        f"= {wall / max(len(out), 1):.1f}s / 账号"
+    )
     if times:
-        print(f"单账号登录耗时：最快 {times[0]:.1f}s · 中位 "
-              f"{statistics.median(times):.1f}s · 最慢 {times[-1]:.1f}s · "
-              f"极差 {times[-1] - times[0]:.1f}s")
+        print(
+            f"单账号登录耗时：最快 {times[0]:.1f}s · 中位 "
+            f"{statistics.median(times):.1f}s · 最慢 {times[-1]:.1f}s · "
+            f"极差 {times[-1] - times[0]:.1f}s"
+        )
     print(f"验证码通路分布：{paths}")
 
     # 只读 Stage 4 的统计（若开了 --with-discovery）
@@ -255,24 +286,25 @@ def main() -> int:
             ms = [d[c]["ms"] for d in disc_recs if (d.get(c) or {}).get("ok")]
             extra = ""
             if c == "balance":
-                cs = {d[c].get("credits") for d in disc_recs
-                      if (d[c] or {}).get("ok")}
+                cs = {d[c].get("credits") for d in disc_recs if (d[c] or {}).get("ok")}
                 extra = f"  credits={sorted(cs)}"
             if c == "list_keys":
-                ns = sorted({d[c].get("n") for d in disc_recs
-                             if (d[c] or {}).get("ok")})
+                ns = sorted({d[c].get("n") for d in disc_recs if (d[c] or {}).get("ok")})
                 extra = f"  每账号 key 数={ns}"
             med = f" 中位 {statistics.median(ms):.0f}ms" if ms else ""
-            print(f"  {'✓' if okn == len(disc_recs) else '✗'} {c:14s} "
-                  f"{okn}/{len(disc_recs)}{med}{extra}")
-        bad = [(r["email"], d) for r, d in
-               ((r, r["discovery"]) for r in out if r.get("discovery"))
-               if any(not (d.get(c) or {}).get("ok") for c in calls)]
+            print(
+                f"  {'✓' if okn == len(disc_recs) else '✗'} {c:14s} "
+                f"{okn}/{len(disc_recs)}{med}{extra}"
+            )
+        bad = [
+            (r["email"], d)
+            for r, d in ((r, r["discovery"]) for r in out if r.get("discovery"))
+            if any(not (d.get(c) or {}).get("ok") for c in calls)
+        ]
         if bad:
             print(f"  ⚠ {len(bad)} 个账号有失败调用：")
             for e, d in bad[:5]:
-                errs = {c: d[c].get("error") for c in calls
-                        if (d.get(c) or {}).get("error")}
+                errs = {c: d[c].get("error") for c in calls if (d.get(c) or {}).get("error")}
                 print(f"      {e}: {str(errs)[:140]}")
 
     if len(out) > len(ok):
@@ -285,13 +317,23 @@ def main() -> int:
     if args.out:
         p = Path(args.out)
         p.parent.mkdir(parents=True, exist_ok=True)
-        p.write_text(json.dumps(
-            {"workers": args.workers, "headless": args.headless,
-             "offset": args.offset, "wall_s": round(wall, 2),
-             # 🔴 与 `check_keys_alive.py` 同一道护栏的另一个落点：artifact 必须
-             #    自带覆盖信息，否则几天后单独打开看不出样本只有 53 个。
-             "coverage": coverage,
-             "records": out}, ensure_ascii=False, indent=2), encoding="utf-8")
+        p.write_text(
+            json.dumps(
+                {
+                    "workers": args.workers,
+                    "headless": args.headless,
+                    "offset": args.offset,
+                    "wall_s": round(wall, 2),
+                    # 🔴 与 `check_keys_alive.py` 同一道护栏的另一个落点：artifact 必须
+                    #    自带覆盖信息，否则几天后单独打开看不出样本只有 53 个。
+                    "coverage": coverage,
+                    "records": out,
+                },
+                ensure_ascii=False,
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
         print(f"已落盘 {p}")
     return gap_rc
 

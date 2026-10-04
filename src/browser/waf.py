@@ -27,8 +27,7 @@ from pathlib import Path
 from .settings import BrowserSettings
 
 
-def solve_acw_challenge(challenge_html: str, proxy: str = "", *,
-                        settings: BrowserSettings) -> str:
+def solve_acw_challenge(challenge_html: str, proxy: str = "", *, settings: BrowserSettings) -> str:
     """把挑战页交给真实 Chrome 当**文档**加载，取回 `acw_sc__v2`。
 
     拿不到就返回 `""`（**不抛**）—— 由调用方决定怎么报错。这样本函数可以
@@ -68,8 +67,7 @@ def solve_acw_challenge(challenge_html: str, proxy: str = "", *,
             else:
                 ctx = browser.new_context(viewport=None)
             page = ctx.new_page()
-            page.goto(f"{settings.sso_base}/register",
-                      wait_until="domcontentloaded", timeout=60000)
+            page.goto(f"{settings.sso_base}/register", wait_until="domcontentloaded", timeout=60000)
             page.wait_for_timeout(800)
             page.set_content(challenge_html, wait_until="domcontentloaded")
             for _ in range(10):

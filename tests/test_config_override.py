@@ -100,6 +100,5 @@ def test_conftest_isolation_actually_takes_effect():
     for p in (quota.state_path(), proxypool.state_path()):
         assert Path(p).is_absolute(), f"{p} 不是绝对路径，隔离可能没生效"
         assert ".workbuddy-ai" not in str(p), (
-            f"{p} 指向了仓库内的运行态目录 —— autouse 隔离没生效，"
-            "测试会读写用户的真实状态文件。"
+            f"{p} 指向了仓库内的运行态目录 —— autouse 隔离没生效，测试会读写用户的真实状态文件。"
         )

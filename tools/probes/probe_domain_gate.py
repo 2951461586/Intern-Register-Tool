@@ -109,8 +109,7 @@ def solve_waf(challenge_html: str, proxy: str) -> str:
     from src.browser.settings import BrowserSettings
     from src.browser.waf import solve_acw_challenge
 
-    acw = solve_acw_challenge(challenge_html, proxy,
-                              settings=BrowserSettings.from_config(config))
+    acw = solve_acw_challenge(challenge_html, proxy, settings=BrowserSettings.from_config(config))
     if acw:
         print(f"      ✓ 拿到 acw_sc__v2（len={len(acw)}）")
     return acw

@@ -100,8 +100,7 @@ def _eligible(d: dict) -> bool:
 # ────────────────────────────────────────────────────────────────
 # 单账号：Stage 3~6
 # ────────────────────────────────────────────────────────────────
-def run_one(d: dict, *, headless: bool, create: bool, key_name: str,
-            log=print) -> dict:
+def run_one(d: dict, *, headless: bool, create: bool, key_name: str, log=print) -> dict:
     """跑一个账号的下游链路，返回**要合并回台账的字段**（不整条覆盖）。
 
     返回 dict 而不是 AccountRecord：台账里那 38 条从 CSV 恢复的记录字段
@@ -128,8 +127,9 @@ def run_one(d: dict, *, headless: bool, create: bool, key_name: str,
         from src.browser import BrowserSession
         from src.browser.settings import BrowserSettings
 
-        with BrowserSession(headless=headless,
-                            settings=BrowserSettings.from_config(config)) as sess:
+        with BrowserSession(
+            headless=headless, settings=BrowserSettings.from_config(config)
+        ) as sess:
             res = sess.login(rec.email, rec.password, verbose=False)
             timings["browser_launch"] = sess.launch_ms
             if not res.ok:
@@ -140,9 +140,8 @@ def run_one(d: dict, *, headless: bool, create: bool, key_name: str,
             out["jwt"] = res.jwt
             out["login_ms"] = timings["login"]
             cs = res.captcha_stage or {}
-            log(f"✓ 登录 {timings['login']}ms  jwt={len(res.jwt)}B  "
-                f"captcha={cs.get('path', '?')}")
-    except Exception as ex:                                       # noqa: BLE001
+            log(f"✓ 登录 {timings['login']}ms  jwt={len(res.jwt)}B  captcha={cs.get('path', '?')}")
+    except Exception as ex:  # noqa: BLE001
         out["downstream"] = f"login_failed: {str(ex)[:160]}"
         out["login_ms"] = round((time.time() - t) * 1000)
         log(f"✗ 登录失败：{str(ex)[:140]}")
@@ -180,9 +179,11 @@ def run_one(d: dict, *, headless: bool, create: bool, key_name: str,
         out["key_names"] = [k.get("name", "") for k in keys]
 
         timings["readonly"] = round((time.time() - t) * 1000)
-        log(f"✓ 只读 {timings['readonly']}ms  credits={out['credits']}  "
-            f"keys={out['key_count']}{[k.get('name') for k in keys]}")
-    except Exception as ex:                                       # noqa: BLE001
+        log(
+            f"✓ 只读 {timings['readonly']}ms  credits={out['credits']}  "
+            f"keys={out['key_count']}{[k.get('name') for k in keys]}"
+        )
+    except Exception as ex:  # noqa: BLE001
         out["downstream"] = f"readonly_failed: {str(ex)[:160]}"
         timings["readonly"] = round((time.time() - t) * 1000)
         log(f"✗ 只读失败：{str(ex)[:140]}")
@@ -220,13 +221,12 @@ def run_one(d: dict, *, headless: bool, create: bool, key_name: str,
             #    绝不能用它覆盖 rec.api_key —— 见模块 docstring 第 1 点。
             plaintext = ak.key
             out["key_created"] = "" if ak.key else None
-            log(f"✓ 复用 key「{key_name}」"
-                f"{'（无明文，列表接口不返回）' if not ak.key else ''}")
+            log(f"✓ 复用 key「{key_name}」{'（无明文，列表接口不返回）' if not ak.key else ''}")
         out["key_id"] = ak.id
         out["key_masked"] = ak.masked_key
         out["key_status"] = ak.status
         timings["key"] = round((time.time() - t) * 1000)
-    except Exception as ex:                                       # noqa: BLE001
+    except Exception as ex:  # noqa: BLE001
         out["downstream"] = f"key_failed: {str(ex)[:160]}"
         timings["key"] = round((time.time() - t) * 1000)
         log(f"✗ 建 Key 失败：{str(ex)[:140]}")
@@ -236,8 +236,7 @@ def run_one(d: dict, *, headless: bool, create: bool, key_name: str,
     # 明文 key 的优先来源：本次新建 > 台账里已有的。
     # 台账里那把是**同一个账号**的 key，用它验证等价于验证这个账号。
     verify_key = plaintext or (d.get("api_key") or "")
-    out["verify_key_source"] = ("new" if plaintext else
-                                "ledger" if d.get("api_key") else "none")
+    out["verify_key_source"] = "new" if plaintext else "ledger" if d.get("api_key") else "none"
     if verify_key:
         t = time.time()
         try:
@@ -259,19 +258,23 @@ def run_one(d: dict, *, headless: bool, create: bool, key_name: str,
                 out["verify"] = f"ok({len(models)} models)"
                 out["verify_reply"] = res2.text[:40]
                 out["verify_usage"] = res2.usage
-                log(f"✓ 推理 {timings['verify']}ms  {len(models)} models  "
-                    f"reply={res2.text[:20]!r}  usage={res2.usage.get('total_tokens')}")
+                log(
+                    f"✓ 推理 {timings['verify']}ms  {len(models)} models  "
+                    f"reply={res2.text[:20]!r}  usage={res2.usage.get('total_tokens')}"
+                )
             elif res2.ok and res2.truncated:
                 # 网关通了、模型在推理，只是 reasoning 把 max_tokens 吃光了。
                 # 这不是失败 —— 见 src/apikey.py 的 ChatResult 注释。
                 out["verify"] = f"ok({len(models)} models, 正文被截断)"
                 out["verify_reply"] = ""
-                log(f"✓ 推理 {timings['verify']}ms  {len(models)} models  "
-                    f"正文被 reasoning 截断（非失败）")
+                log(
+                    f"✓ 推理 {timings['verify']}ms  {len(models)} models  "
+                    f"正文被 reasoning 截断（非失败）"
+                )
             else:
                 out["verify"] = f"failed: {res2.error[:120]}"
                 log(f"✗ 推理失败：{res2.error[:140]}")
-        except Exception as ex:                                   # noqa: BLE001
+        except Exception as ex:  # noqa: BLE001
             msg = f"{type(ex).__name__}: {ex}"[:160]
             # 401 + 本次是新建的 key = 传播还没到位，**不是** key 坏了。
             # 旧实现直接写 `failed`，会把一个刚建成功的账号误报成失败。
@@ -297,26 +300,31 @@ def run_one(d: dict, *, headless: bool, create: bool, key_name: str,
 
 # ────────────────────────────────────────────────────────────────
 def main() -> int:
-    ap = argparse.ArgumentParser(
-        description="对已有账号跑下游全链路（零注册请求）")
-    ap.add_argument("--from", dest="src", default=str(DEFAULT_IN),
-                    help="账号台账来源")
+    ap = argparse.ArgumentParser(description="对已有账号跑下游全链路（零注册请求）")
+    ap.add_argument("--from", dest="src", default=str(DEFAULT_IN), help="账号台账来源")
     ap.add_argument("--limit", type=int, default=4, help="跑几个账号（0=全部）")
     ap.add_argument("--workers", type=int, default=4, help="并发数（受内存约束）")
-    ap.add_argument("--create", type=int, default=0,
-                    help="其中前 N 个**真建新 key**（验证建 Key 路径）。"
-                         "0=全部只做幂等复用（默认，不污染 key 列表）")
+    ap.add_argument(
+        "--create",
+        type=int,
+        default=0,
+        help="其中前 N 个**真建新 key**（验证建 Key 路径）。"
+        "0=全部只做幂等复用（默认，不污染 key 列表）",
+    )
     ap.add_argument("--key-name", default="default", help="复用/新建的 key 名")
     # `--headless` / `--headful` 的接线与 `run.py` 共用（见 src/cli.py）。
     # ⚠ 别把模块级 `DEFAULT_IN` / `DEFAULT_OUT` 也搬进 src/cli.py ——
     #   它们是**冻住 import 时刻**那份快照的取值（上面 :65-67 写了为什么无害），
     #   搬走会让"什么时候取值"从可见变成不可见。
     _cli.add_headless_args(ap)
-    ap.add_argument("--out", default=str(DEFAULT_OUT),
-                    help="台账输出。默认 = 台账读源，此时落"
-                         "ledger/runs/<日期>/results-<时间戳>.json 快照（随即成为新读源）"
-                         "+ 刷 ledger/latest.json（本批结果）；"
-                         "给别的路径则只写那个文件")
+    ap.add_argument(
+        "--out",
+        default=str(DEFAULT_OUT),
+        help="台账输出。默认 = 台账读源，此时落"
+        "ledger/runs/<日期>/results-<时间戳>.json 快照（随即成为新读源）"
+        "+ 刷 ledger/latest.json（本批结果）；"
+        "给别的路径则只写那个文件",
+    )
     ap.add_argument("--no-write", action="store_true", help="不写台账，只打印")
     args = ap.parse_args()
 
@@ -339,9 +347,11 @@ def main() -> int:
     n = len(pool) if args.limit <= 0 else min(args.limit, len(pool))
     targets = pool[:n]
 
-    print(f"台账 {len(existing)} 条 → 可用 {len(pool)} 条 → 本次跑 {n} 条"
-          f"（并发 {args.workers}，"
-          f"{'建新 key' if args.create else '仅幂等复用'}）")
+    print(
+        f"台账 {len(existing)} 条 → 可用 {len(pool)} 条 → 本次跑 {n} 条"
+        f"（并发 {args.workers}，"
+        f"{'建新 key' if args.create else '仅幂等复用'}）"
+    )
     print("⚠ 零注册请求：本工具不打注册接口，不会加深 B0000 封禁")
     print("=" * 72)
 
@@ -354,18 +364,27 @@ def main() -> int:
 
     def work(i: int, d: dict) -> None:
         tag = f"[{i + 1}/{n}] {d.get('email', '?')[:34]}"
+
         def log(msg: str):
             with lock:
                 print(f"{tag} {msg}", flush=True)
+
         try:
             # 🔴 `{**d, **out}` 而不是直接 `out`：台账写回是**按 email 整条替换**的
             #    （见 src/ledger.merge_records）。若只交增量字段，一旦这条胜出
             #    就会把 username/password/api_key 全洗掉。交超集才安全 ——
             #    无论哪一方胜出，信息都不减少。
-            results[i] = {**d, **run_one(d, headless=args.headless,
-                                         create=(i < args.create),
-                                         key_name=args.key_name, log=log)}
-        except Exception as ex:                                   # noqa: BLE001
+            results[i] = {
+                **d,
+                **run_one(
+                    d,
+                    headless=args.headless,
+                    create=(i < args.create),
+                    key_name=args.key_name,
+                    log=log,
+                ),
+            }
+        except Exception as ex:  # noqa: BLE001
             results[i] = {**d, "downstream": f"crash: {str(ex)[:160]}"}
             log(f"✗ 崩溃：{str(ex)[:140]}")
 
@@ -391,9 +410,11 @@ def main() -> int:
     print(f"  登录      {ok_login}/{n}")
     print(f"  只读额度  {cnt('credits')}/{n}")
     print(f"  建/复用Key {ok_key}/{n}")
-    print(f"  真实推理  {ok_ver}/{n}"
-          + (f"（{no_key} 个无明文 key 跳过）" if no_key else "")
-          + (f"（{pending} 个新建 key 传播未到位）" if pending else ""))
+    print(
+        f"  真实推理  {ok_ver}/{n}"
+        + (f"（{no_key} 个无明文 key 跳过）" if no_key else "")
+        + (f"（{pending} 个新建 key 传播未到位）" if pending else "")
+    )
 
     # ── 额度分布：上一轮发现过非 10 的取值，这里必须显式列出来 ──
     creds = [c for r in results if (c := r.get("credits"))]
@@ -406,6 +427,7 @@ def main() -> int:
         for r in results:
             b = r.get("balance_raw") or {}
             w = b.get("usage_windows") or {}
+
             # ⚠ `w=w` 是**显式绑定**，不是冗余：`fmt` 是闭包，若不绑定就会捕获
             #   循环变量 `w` 的**引用**。当前是在同轮内立即调用（所以行为正确），
             #   但一旦有人把 `fmt` 存起来延后调用，全部窗口会变成最后一条记录的。
@@ -414,18 +436,23 @@ def main() -> int:
                 if not x:
                     return "-"
                 return f"{x.get('used_credits')}/{x.get('remaining_credits')}"
-            print(f"  {r['email']:38s} {fmt('5h'):>18s} {fmt('7d'):>18s}"
-                  f"  {b.get('available_credits')}")
+
+            print(
+                f"  {r['email']:38s} {fmt('5h'):>18s} {fmt('7d'):>18s}"
+                f"  {b.get('available_credits')}"
+            )
 
         odd = [r for r in results if r.get("credits") not in ("10.000000", "10")]
         if odd:
-            print(f"\n  ⚠ {len(odd)} 个账号 credits ≠ 10（原始 balance 已存进"
-                  f" exports/balance_dump.json）")
+            print(
+                f"\n  ⚠ {len(odd)} 个账号 credits ≠ 10（原始 balance 已存进"
+                f" exports/balance_dump.json）"
+            )
 
     # 原始 balance 落盘：只读接口拿到的，是排查"额度去哪了"的唯一证据。
     # 追加式保存（按 email 覆盖同一条），避免每次跑都丢上一次的快照。
     if any(r.get("balance_raw") for r in results):
-        dump_p = (ROOT / ".workbuddy-ai" / "exports" / "balance_dump.json")
+        dump_p = ROOT / ".workbuddy-ai" / "exports" / "balance_dump.json"
         dump_p.parent.mkdir(parents=True, exist_ok=True)
         old = {}
         if dump_p.is_file():
@@ -435,10 +462,11 @@ def main() -> int:
                 old = {}
         for r in results:
             if r.get("balance_raw"):
-                old[r["email"]] = {"at": time.strftime("%Y-%m-%d %H:%M:%S"),
-                                   "balance": r["balance_raw"]}
-        dump_p.write_text(json.dumps(old, ensure_ascii=False, indent=2),
-                          encoding="utf-8")
+                old[r["email"]] = {
+                    "at": time.strftime("%Y-%m-%d %H:%M:%S"),
+                    "balance": r["balance_raw"],
+                }
+        dump_p.write_text(json.dumps(old, ensure_ascii=False, indent=2), encoding="utf-8")
         print(f"\n  balance 原始快照已存 {dump_p}（累计 {len(old)} 个账号）")
 
     failed = [r for r in results if r.get("downstream") != "ok"]

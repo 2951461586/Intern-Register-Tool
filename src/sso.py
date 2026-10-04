@@ -133,8 +133,7 @@ class SSOClient:
             from .browser.settings import BrowserSettings
             from .browser.waf import solve_acw_challenge
 
-            solver = partial(solve_acw_challenge,
-                             settings=BrowserSettings.from_config(config))
+            solver = partial(solve_acw_challenge, settings=BrowserSettings.from_config(config))
         return solver(challenge_html, self.proxy or config.IR_PROXY or "")
 
     def _pass_waf(

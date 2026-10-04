@@ -68,8 +68,7 @@ def _step_open_form(page, st: _AttemptState, settings: BrowserSettings):
     return acc_box
 
 
-def _step_type_credentials(page, st: _AttemptState, acc_box, account: str,
-                           password: str) -> None:
+def _step_type_credentials(page, st: _AttemptState, acc_box, account: str, password: str) -> None:
     """逐字输入账号与密码。"""
     # 3) 逐字输入（用 type 而非 fill —— fill 不产生任何键盘事件）。
     #    ⚠ 按键间隔见 `TYPE_DELAY_LO/HI` 的说明：默认值来自人类打字的量级，
@@ -112,8 +111,9 @@ def _step_submit(page, st: _AttemptState) -> None:
     st.ev("submit")
 
 
-def _step_wait_captcha(page, st: _AttemptState, *, timeout: int, vw: int, vh: int,
-                       cur: tuple, verbose: bool) -> tuple:
+def _step_wait_captcha(
+    page, st: _AttemptState, *, timeout: int, vw: int, vh: int, cur: tuple, verbose: bool
+) -> tuple:
     """等验证码 SDK 出结果，返回 `(新光标位置, 等待毫秒数)`。"""
     cap = st.cap
     # 7) 等验证码出结果。
@@ -137,21 +137,27 @@ def _step_wait_captcha(page, st: _AttemptState, *, timeout: int, vw: int, vh: in
                 st.mv["budget_logged"] = True
                 st.ev("micro_budget_exhausted", f"{MICRO_BUDGET_S}s")
                 if verbose:
-                    print(f"    [login] 微移动预算用尽（{MICRO_BUDGET_S}s），"
-                          f"转入安静期等 SDK 降级", flush=True)
+                    print(
+                        f"    [login] 微移动预算用尽（{MICRO_BUDGET_S}s），转入安静期等 SDK 降级",
+                        flush=True,
+                    )
             _idle_wait(page, stats=st.mv)
     waited = round((time.time() - t_cap) * 1000)
     st.mark("captcha_ready")
     st.ev("captcha_ready", f"waited={waited}ms init={cap['init']}")
     if verbose:
-        print(f"    [login] init count = {cap['init']} "
-              f"(waited {waited / 1000:.1f}s, traceless_reject={cap['trivial']}, "
-              f"micro_moves={st.mv.get('moves', 0)})", flush=True)
+        print(
+            f"    [login] init count = {cap['init']} "
+            f"(waited {waited / 1000:.1f}s, traceless_reject={cap['trivial']}, "
+            f"micro_moves={st.mv.get('moves', 0)})",
+            flush=True,
+        )
     return cur, waited
 
 
-def _step_click_until_jwt(page, st: _AttemptState, *, vw: int, vh: int, cur: tuple,
-                          verbose: bool) -> tuple:
+def _step_click_until_jwt(
+    page, st: _AttemptState, *, vw: int, vh: int, cur: tuple, verbose: bool
+) -> tuple:
     """点复选框（最多 `MAX_CLICKS_PER_ATTEMPT` 轮），返回新光标位置。"""
     cap = st.cap
     # 8) 点击复选框，最多 MAX_CLICKS_PER_ATTEMPT 轮
@@ -161,8 +167,11 @@ def _step_click_until_jwt(page, st: _AttemptState, *, vw: int, vh: int, cur: tup
         cur, clicked = _click_checkbox(page, cur)
         st.ev(f"click#{attempt + 1}", f"clicked={clicked}")
         if verbose:
-            print(f"    [login] click #{attempt + 1} at "
-                  f"({cur[0]:.0f},{cur[1]:.0f}) clicked={clicked}", flush=True)
+            print(
+                f"    [login] click #{attempt + 1} at "
+                f"({cur[0]:.0f},{cur[1]:.0f}) clicked={clicked}",
+                flush=True,
+            )
         if not clicked:
             page.wait_for_timeout(1200)
             continue
@@ -206,24 +215,33 @@ def _build_result(st: _AttemptState, *, cookies: dict, waited: int) -> LoginResu
         else:
             reason = "no jwt captured"
     return LoginResult(
-        ok=bool(jwt), jwt=jwt, code=st.code, reason=reason,
+        ok=bool(jwt),
+        jwt=jwt,
+        code=st.code,
+        reason=reason,
         cookies=cookies,
-        captcha_stage={"init": cap["init"], "verify": cap["verify"],
-                       "last_ok": cap["last_ok"], "slider": cap["slider"],
-                       "traceless_reject": cap["trivial"],
-                       "payload": cap["payload"],
-                       "events": cap["events"],
-                       # Path A = TRACELESS 自过（0 点击）；Path B = 降级 CHECK_BOX
-                       "path": ("A" if cap["init"] <= 1 and cap["last_ok"]
-                                else ("B" if cap["init"] >= 2 else "?")),
-                       "mouse": {"micro_move": MICRO_MOVE,
-                                 "budget_s": MICRO_BUDGET_S,
-                                 "moves": st.mv.get("moves", 0),
-                                 "points": st.mv.get("points", 0),
-                                 "idle_waits": st.mv.get("idle_waits", 0),
-                                 "budget_exhausted": bool(
-                                     st.mv.get("budget_logged"))},
-                       "captcha_wait_ms": waited},
+        captcha_stage={
+            "init": cap["init"],
+            "verify": cap["verify"],
+            "last_ok": cap["last_ok"],
+            "slider": cap["slider"],
+            "traceless_reject": cap["trivial"],
+            "payload": cap["payload"],
+            "events": cap["events"],
+            # Path A = TRACELESS 自过（0 点击）；Path B = 降级 CHECK_BOX
+            "path": (
+                "A" if cap["init"] <= 1 and cap["last_ok"] else ("B" if cap["init"] >= 2 else "?")
+            ),
+            "mouse": {
+                "micro_move": MICRO_MOVE,
+                "budget_s": MICRO_BUDGET_S,
+                "moves": st.mv.get("moves", 0),
+                "points": st.mv.get("points", 0),
+                "idle_waits": st.mv.get("idle_waits", 0),
+                "budget_exhausted": bool(st.mv.get("budget_logged")),
+            },
+            "captcha_wait_ms": waited,
+        },
         timings=st.timings,
     )
 
@@ -231,10 +249,18 @@ def _build_result(st: _AttemptState, *, cookies: dict, waited: int) -> LoginResu
 # ────────────────────────────────────────────────────────────────
 # 在给定 browser 上跑一次尝试（自带 context 生命周期）
 # ────────────────────────────────────────────────────────────────
-def _run_attempt(browser, *, account: str, password: str, headless: bool,
-                 timeout: int, settings: BrowserSettings,
-                 screenshot_prefix: str | None = None,
-                 verbose: bool = False, tag: str = "") -> LoginResult:
+def _run_attempt(
+    browser,
+    *,
+    account: str,
+    password: str,
+    headless: bool,
+    timeout: int,
+    settings: BrowserSettings,
+    screenshot_prefix: str | None = None,
+    verbose: bool = False,
+    tag: str = "",
+) -> LoginResult:
     """在给定 browser 上跑一次登录尝试。
 
     这里**只负责编排**：建 context → 注册响应回调 → 依次调用 8 个步骤 → 折结果。
@@ -280,8 +306,9 @@ def _run_attempt(browser, *, account: str, password: str, headless: bool,
             page.screenshot(path=f"{screenshot_prefix}{tag}_filled.png")
 
         _step_submit(page, st)
-        cur, waited = _step_wait_captcha(page, st, timeout=timeout, vw=vw, vh=vh,
-                                         cur=cur, verbose=verbose)
+        cur, waited = _step_wait_captcha(
+            page, st, timeout=timeout, vw=vw, vh=vh, cur=cur, verbose=verbose
+        )
         _step_click_until_jwt(page, st, vw=vw, vh=vh, cur=cur, verbose=verbose)
 
         if screenshot_prefix:
@@ -295,11 +322,16 @@ def _run_attempt(browser, *, account: str, password: str, headless: bool,
                 page.screenshot(path=f"{screenshot_prefix}{tag}_error.png")
         except Exception:
             pass
-        return LoginResult(ok=False, reason=f"{type(ex).__name__}: {ex}"[:200],
-                           captcha_stage={"init": st.cap["init"],
-                                          "verify": st.cap["verify"],
-                                          "events": st.cap["events"]},
-                           timings=st.timings)
+        return LoginResult(
+            ok=False,
+            reason=f"{type(ex).__name__}: {ex}"[:200],
+            captcha_stage={
+                "init": st.cap["init"],
+                "verify": st.cap["verify"],
+                "events": st.cap["events"],
+            },
+            timings=st.timings,
+        )
     finally:
         try:
             ctx.close()

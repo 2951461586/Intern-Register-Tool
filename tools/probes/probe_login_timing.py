@@ -48,21 +48,24 @@ from src.mailbox import make_source  # noqa: E402
 from src.pipeline import AccountRecord, stage_register  # noqa: E402
 from src.sso import SSOClient  # noqa: E402
 
-KEYS = ["goto", "prewarm", "form_ready", "typed", "checkbox", "warmup",
-        "captcha_ready"]
+KEYS = ["goto", "prewarm", "form_ready", "typed", "checkbox", "warmup", "captcha_ready"]
 
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--prewarm", type=int, default=0,
-                    help="goto 之后闲置的毫秒数（对应 IR_PREWARM_MS）")
-    ap.add_argument("--type-lo", type=int, default=None,
-                    help="逐字输入按键间隔下限 ms（对应 IR_TYPE_DELAY_LO）")
-    ap.add_argument("--type-hi", type=int, default=None,
-                    help="逐字输入按键间隔上限 ms（对应 IR_TYPE_DELAY_HI）")
+    ap.add_argument(
+        "--prewarm", type=int, default=0, help="goto 之后闲置的毫秒数（对应 IR_PREWARM_MS）"
+    )
+    ap.add_argument(
+        "--type-lo", type=int, default=None, help="逐字输入按键间隔下限 ms（对应 IR_TYPE_DELAY_LO）"
+    )
+    ap.add_argument(
+        "--type-hi", type=int, default=None, help="逐字输入按键间隔上限 ms（对应 IR_TYPE_DELAY_HI）"
+    )
     ap.add_argument("--rounds", type=int, default=5)
-    ap.add_argument("--drop-first", action="store_true",
-                    help="丢弃第 1 轮（冷启动）后再统计 —— 强烈建议开启")
+    ap.add_argument(
+        "--drop-first", action="store_true", help="丢弃第 1 轮（冷启动）后再统计 —— 强烈建议开启"
+    )
     ap.add_argument("--gap", type=float, default=3.0, help="轮次间隔（秒）")
     ap.add_argument("--out", default=None)
     args = ap.parse_args()
@@ -74,9 +77,12 @@ def main():
     if args.type_hi is not None:
         checks.append(("TYPE_DELAY_HI", browser.TYPE_DELAY_HI, args.type_hi))
     bad = [(n, got, want) for n, got, want in checks if got != want]
-    print("[probe] 配置自检: " +
-          "  ".join(f"{n}={got}" for n, got, _ in checks) +
-          f"  一致={not bad}", flush=True)
+    print(
+        "[probe] 配置自检: "
+        + "  ".join(f"{n}={got}" for n, got, _ in checks)
+        + f"  一致={not bad}",
+        flush=True,
+    )
     if bad:
         for n, got, want in bad:
             print(f"[probe] ✗ {n}: 实际 {got} != 期望 {want}", flush=True)
@@ -84,18 +90,27 @@ def main():
 
     rows = []
     for i in range(args.rounds):
-        print(f"\n{'─' * 70}\n[probe] 第 {i + 1}/{args.rounds} 轮"
-              f"{'（冷启动，统计时丢弃）' if i == 0 and args.drop_first else ''}"
-              f"\n{'─' * 70}", flush=True)
+        print(
+            f"\n{'─' * 70}\n[probe] 第 {i + 1}/{args.rounds} 轮"
+            f"{'（冷启动，统计时丢弃）' if i == 0 and args.drop_first else ''}"
+            f"\n{'─' * 70}",
+            flush=True,
+        )
         rec = AccountRecord(created_at=time.strftime("%Y-%m-%d %H:%M:%S"))
         mail, sso = make_source(), SSOClient()
         if not stage_register(mail, sso, rec, log=lambda m: None):
             print(f"[probe] 注册失败: {rec.error}", flush=True)
             continue
 
-        res = browser.login(rec.email, rec.password, headless=True,
-                                  timeout=90, attempts=1, verbose=False,
-                                  settings=browser.BrowserSettings.from_config(config))
+        res = browser.login(
+            rec.email,
+            rec.password,
+            headless=True,
+            timeout=90,
+            attempts=1,
+            verbose=False,
+            settings=browser.BrowserSettings.from_config(config),
+        )
         cs = res.captcha_stage or {}
         tm = res.timings or {}
         stages, prev = {}, 0
@@ -106,9 +121,8 @@ def main():
 
         # 关键节点时刻（毫秒 → 秒），用于定位 captcha_wait 双峰
         key_t = {}
-        for t, kind, _ in (cs.get("events") or []):
-            if kind in ("submit", "Init#1", "Init#2", "Verify#1") \
-                    and kind not in key_t:
+        for t, kind, _ in cs.get("events") or []:
+            if kind in ("submit", "Init#1", "Init#2", "Verify#1") and kind not in key_t:
                 key_t[kind] = round(t / 1000, 2)
 
         row = {
@@ -124,19 +138,21 @@ def main():
             "events": cs.get("events") or [],
         }
         rows.append(row)
-        print(f"  ok={res.ok} path={row['path']} "
-              f"typed={stages.get('typed', 0):.2f}s "
-              f"captcha_wait={row['captcha_wait_s']:.2f}s "
-              f"total={row['total_s']:.2f}s", flush=True)
+        print(
+            f"  ok={res.ok} path={row['path']} "
+            f"typed={stages.get('typed', 0):.2f}s "
+            f"captcha_wait={row['captcha_wait_s']:.2f}s "
+            f"total={row['total_s']:.2f}s",
+            flush=True,
+        )
         # 🔴 定位 captcha_wait 双峰：把 submit 之后的节点逐个摆出来
         #    Init#1 迟到 → SDK 初始化慢（与页面/网络有关）
         #    Verify#1 迟到 → 决策慢（与行为数据/风控有关）
         s = key_t.get("submit")
         if s is not None:
             seg = "  ".join(
-                f"{k}@{key_t[k] - s:+.2f}s"
-                for k in ("Init#1", "Init#2", "Verify#1")
-                if k in key_t)
+                f"{k}@{key_t[k] - s:+.2f}s" for k in ("Init#1", "Init#2", "Verify#1") if k in key_t
+            )
             print(f"    submit@{s:.2f}s   {seg}", flush=True)
 
         if i < args.rounds - 1:
@@ -147,39 +163,49 @@ def main():
     ok = ok_all[1:] if (args.drop_first and len(ok_all) > 1) else ok_all
 
     print(f"\n{'=' * 70}")
-    print(f"SUMMARY type={args.type_lo}~{args.type_hi}ms prewarm={args.prewarm}ms  "
-          f"成功={len(ok_all)}/{len(rows)}  统计样本={len(ok)}"
-          f"{'（已丢弃第 1 轮冷启动）' if args.drop_first else ''}")
+    print(
+        f"SUMMARY type={args.type_lo}~{args.type_hi}ms prewarm={args.prewarm}ms  "
+        f"成功={len(ok_all)}/{len(rows)}  统计样本={len(ok)}"
+        f"{'（已丢弃第 1 轮冷启动）' if args.drop_first else ''}"
+    )
     print(f"{'=' * 70}")
-    print(f"  {'#':>2s} {'ok':>3s} {'path':>4s} {'typed':>9s} {'captcha_wait':>13s} "
-          f"{'total':>9s} {'typed+wait':>11s}")
+    print(
+        f"  {'#':>2s} {'ok':>3s} {'path':>4s} {'typed':>9s} {'captcha_wait':>13s} "
+        f"{'total':>9s} {'typed+wait':>11s}"
+    )
     for r in rows:
         tw = r["stages"].get("typed", 0) + r["captcha_wait_s"]
-        print(f"  {r['round']:>2d} {str(r['ok']):>3s} {str(r['path']):>4s} "
-              f"{r['stages'].get('typed', 0):>8.2f}s {r['captcha_wait_s']:>12.2f}s "
-              f"{r['total_s']:>8.2f}s {tw:>10.2f}s")
+        print(
+            f"  {r['round']:>2d} {str(r['ok']):>3s} {str(r['path']):>4s} "
+            f"{r['stages'].get('typed', 0):>8.2f}s {r['captcha_wait_s']:>12.2f}s "
+            f"{r['total_s']:>8.2f}s {tw:>10.2f}s"
+        )
 
     if ok:
+
         def avg(key):
             return sum(key(r) for r in ok) / len(ok)
+
         print(f"\n  平均 typed        = {avg(lambda r: r['stages'].get('typed', 0)):.2f}s")
         print(f"  平均 captcha_wait = {avg(lambda r: r['captcha_wait_s']):.2f}s")
-        print(f"  平均 typed+wait   = "
-              f"{avg(lambda r: r['stages'].get('typed', 0) + r['captcha_wait_s']):.2f}s")
+        print(
+            f"  平均 typed+wait   = "
+            f"{avg(lambda r: r['stages'].get('typed', 0) + r['captcha_wait_s']):.2f}s"
+        )
         print(f"  平均 登录总耗时    = {avg(lambda r: r['total_s']):.2f}s")
         paths = [r["path"] for r in ok]
-        print(f"  通路分布          = {paths.count('A')}×Path A / "
-              f"{paths.count('B')}×Path B")
+        print(f"  通路分布          = {paths.count('A')}×Path A / {paths.count('B')}×Path B")
         # 判据提示：如果 typed+wait 基本不变，说明总时长被守恒，压打字无收益
         tw = [r["stages"].get("typed", 0) + r["captcha_wait_s"] for r in ok]
         spread = max(tw) - min(tw)
-        print(f"\n  typed+wait 极差 = {spread:.2f}s  "
-              f"（{'≈ 守恒 → 压打字无收益' if spread < 2.0 else '有波动 → 值得再看'}）")
+        print(
+            f"\n  typed+wait 极差 = {spread:.2f}s  "
+            f"（{'≈ 守恒 → 压打字无收益' if spread < 2.0 else '有波动 → 值得再看'}）"
+        )
     print("=" * 70)
 
     if args.out:
-        Path(args.out).write_text(json.dumps(rows, ensure_ascii=False, indent=2),
-                                  encoding="utf-8")
+        Path(args.out).write_text(json.dumps(rows, ensure_ascii=False, indent=2), encoding="utf-8")
         print(f"[probe] 明细已写入 {args.out}", flush=True)
     return 0 if len(ok_all) == len(rows) else 1
 

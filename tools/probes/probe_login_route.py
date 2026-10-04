@@ -37,10 +37,10 @@ def main():
 
     report = {}
     with sync_playwright() as p:
-        browser = p.chromium.launch(executable_path=config.CHROME_PATH,
-                                    headless=True, args=CHROME_ARGS)
-        ctx = browser.new_context(locale="zh-CN", timezone_id="Asia/Shanghai",
-                                  viewport=None)
+        browser = p.chromium.launch(
+            executable_path=config.CHROME_PATH, headless=True, args=CHROME_ARGS
+        )
+        ctx = browser.new_context(locale="zh-CN", timezone_id="Asia/Shanghai", viewport=None)
         page = ctx.new_page()
 
         url = build_login_url(BrowserSettings.from_config(config))
@@ -75,8 +75,7 @@ def main():
         except Exception as ex:
             report["tab_click_error"] = f"{type(ex).__name__}: {ex}"[:200]
         try:
-            page.locator("#normal_login_account").wait_for(state="visible",
-                                                           timeout=15000)
+            page.locator("#normal_login_account").wait_for(state="visible", timeout=15000)
             report["form_ready_ms"] = round((time.time() - t2) * 1000)
         except Exception as ex:
             report["form_wait_error"] = f"{type(ex).__name__}: {ex}"[:200]
@@ -98,8 +97,7 @@ def main():
         }""")
 
         # 反向验证：直接用「点完之后的 URL」重开一个 context，看表单是否已在
-        ctx2 = browser.new_context(locale="zh-CN", timezone_id="Asia/Shanghai",
-                                   viewport=None)
+        ctx2 = browser.new_context(locale="zh-CN", timezone_id="Asia/Shanghai", viewport=None)
         p2 = ctx2.new_page()
         cand = report.get("href_after_tab") or ""
         report["candidate_url"] = cand
@@ -107,8 +105,7 @@ def main():
             t3 = time.time()
             try:
                 p2.goto(cand, wait_until="domcontentloaded", timeout=60000)
-                p2.locator("#normal_login_account").wait_for(state="visible",
-                                                             timeout=12000)
+                p2.locator("#normal_login_account").wait_for(state="visible", timeout=12000)
                 report["direct_hit"] = True
                 report["direct_ms"] = round((time.time() - t3) * 1000)
             except Exception as ex:

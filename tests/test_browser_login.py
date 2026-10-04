@@ -84,8 +84,14 @@ def _no_real_sleep(monkeypatch):
 def test_login_result_field_order_is_frozen():
     """字段名与顺序都是契约 —— `to_json` 式的展开按定义顺序。"""
     assert [f.name for f in dataclasses.fields(LoginResult)] == [
-        "ok", "jwt", "code", "reason", "cookies",
-        "captcha_stage", "attempts_used", "timings",
+        "ok",
+        "jwt",
+        "code",
+        "reason",
+        "cookies",
+        "captcha_stage",
+        "attempts_used",
+        "timings",
     ]
 
 
@@ -93,16 +99,28 @@ def test_captcha_stage_keys_are_frozen():
     """`captcha_stage` 的键被探针与台账依赖，少一个就是静默丢数据。"""
     res = _build_result(_AttemptState(), cookies={}, waited=0)
     assert set(res.captcha_stage) == {
-        "init", "verify", "last_ok", "slider", "traceless_reject",
-        "payload", "events", "path", "mouse", "captcha_wait_ms",
+        "init",
+        "verify",
+        "last_ok",
+        "slider",
+        "traceless_reject",
+        "payload",
+        "events",
+        "path",
+        "mouse",
+        "captcha_wait_ms",
     }
 
 
 def test_captcha_stage_mouse_keys_are_frozen():
     res = _build_result(_AttemptState(), cookies={}, waited=0)
     assert set(res.captcha_stage["mouse"]) == {
-        "micro_move", "budget_s", "moves", "points",
-        "idle_waits", "budget_exhausted",
+        "micro_move",
+        "budget_s",
+        "moves",
+        "points",
+        "idle_waits",
+        "budget_exhausted",
     }
 
 
@@ -117,8 +135,7 @@ def test_build_result_defaults_when_nothing_happened():
 
 def test_build_result_falls_back_to_uaa_token_cookie():
     """没有抓到 Authorization 头时，退到 cookie 里的 uaa-token。"""
-    res = _build_result(
-        _AttemptState(), cookies={"uaa-token": "from-cookie"}, waited=0)
+    res = _build_result(_AttemptState(), cookies={"uaa-token": "from-cookie"}, waited=0)
     assert res.ok is True
     assert res.jwt == "from-cookie"
 
@@ -126,18 +143,20 @@ def test_build_result_falls_back_to_uaa_token_cookie():
 def test_build_result_prefers_captured_jwt_over_cookie():
     st = _AttemptState()
     st.jwt = "from-header"
-    res = _build_result(st, cookies={"uaa-token": "from-cookie"},
-                                      waited=0)
+    res = _build_result(st, cookies={"uaa-token": "from-cookie"}, waited=0)
     assert res.jwt == "from-header"
 
 
-@pytest.mark.parametrize("init,last_ok,expected", [
-    (0, False, "?"),    # 还没跑过验证码
-    (1, True, "A"),     # TRACELESS 自过（0 次点击）
-    (1, False, "?"),    # 预检被拒，还没降级
-    (2, False, "B"),    # 已降级到 CHECK_BOX
-    (3, True, "B"),     # init>=2 一律记 B
-])
+@pytest.mark.parametrize(
+    "init,last_ok,expected",
+    [
+        (0, False, "?"),  # 还没跑过验证码
+        (1, True, "A"),  # TRACELESS 自过（0 次点击）
+        (1, False, "?"),  # 预检被拒，还没降级
+        (2, False, "B"),  # 已降级到 CHECK_BOX
+        (3, True, "B"),  # init>=2 一律记 B
+    ],
+)
 def test_captcha_path_classification(init, last_ok, expected):
     """Path A / B 的判据：A = `init<=1 且通过`，B = `init>=2`。"""
     st = _AttemptState()
@@ -152,13 +171,11 @@ def test_reason_priority_slider_beats_captcha_reject():
     st = _AttemptState()
     st.cap["slider"] = "aliyunCaptcha-sliding"
     st.cap["verify"] = ["F001"]
-    assert "secondary captcha" in _build_result(
-        st, cookies={}, waited=0).reason
+    assert "secondary captcha" in _build_result(st, cookies={}, waited=0).reason
 
     st2 = _AttemptState()
     st2.cap["verify"] = ["F001"]
-    assert "captcha rejected (F001)" == _build_result(
-        st2, cookies={}, waited=0).reason
+    assert "captcha rejected (F001)" == _build_result(st2, cookies={}, waited=0).reason
 
 
 # ────────────────────────────────────────────────────────────────
@@ -183,8 +200,15 @@ def test_ev_appends_triple_to_events():
 
 def test_state_starts_with_the_original_container_shapes():
     st = _AttemptState()
-    assert st.cap == {"init": 0, "verify": [], "last_ok": False, "payload": "",
-                      "slider": "", "trivial": 0, "events": []}
+    assert st.cap == {
+        "init": 0,
+        "verify": [],
+        "last_ok": False,
+        "payload": "",
+        "slider": "",
+        "trivial": 0,
+        "events": [],
+    }
     assert st.mv == {}
     assert st.timings == {}
     assert st.jwt == "" and st.code == ""
@@ -220,8 +244,7 @@ def test_on_response_captures_only_first_bearer_token():
 
 def test_on_response_captures_auth_code():
     st = _AttemptState()
-    st.on_response(_FakeResp(url="https://x/internal/auth",
-                             payload={"data": {"code": "C123"}}))
+    st.on_response(_FakeResp(url="https://x/internal/auth", payload={"data": {"code": "C123"}}))
     assert st.code == "C123"
 
 
@@ -247,15 +270,13 @@ def test_code_is_a_race_snapshot_taken_when_the_attempt_ends():
 
     # ② 回调跑到之后 → 有值
     st2 = _AttemptState()
-    st2.on_response(_FakeResp(url="https://x/internal/auth",
-                              payload={"data": {"code": "C" * 20}}))
+    st2.on_response(_FakeResp(url="https://x/internal/auth", payload={"data": {"code": "C" * 20}}))
     assert _build_result(st2, cookies={}, waited=0).code == "C" * 20
 
     # ③ 快照一旦交出去，之后再来的回调补不回来
     st3 = _AttemptState()
     res = _build_result(st3, cookies={}, waited=0)
-    st3.on_response(_FakeResp(url="https://x/internal/auth",
-                              payload={"data": {"code": "late"}}))
+    st3.on_response(_FakeResp(url="https://x/internal/auth", payload={"data": {"code": "late"}}))
     assert res.code == ""
 
 
@@ -267,42 +288,53 @@ def test_on_response_counts_init_captcha():
     assert [e[1] for e in st.cap["events"]] == ["Init#1", "Init#2"]
 
 
-@pytest.mark.parametrize("init,ok,expected_trivial", [
-    (1, False, 1),   # Init#1 阶段被拒 → 计一次
-    (1, True, 0),    # TRACELESS 直接通过（T001）→ 不算 reject
-    (2, False, 0),   # 降级之后的拒绝不算 TRACELESS 预检被拒
-])
-def test_on_response_trivial_counts_only_init1_rejections(init, ok,
-                                                          expected_trivial):
+@pytest.mark.parametrize(
+    "init,ok,expected_trivial",
+    [
+        (1, False, 1),  # Init#1 阶段被拒 → 计一次
+        (1, True, 0),  # TRACELESS 直接通过（T001）→ 不算 reject
+        (2, False, 0),  # 降级之后的拒绝不算 TRACELESS 预检被拒
+    ],
+)
+def test_on_response_trivial_counts_only_init1_rejections(init, ok, expected_trivial):
     """🔴 判据必须同时满足"在 Init#1 阶段"和"ok=False" —— 见原注释。"""
     st = _AttemptState()
     st.cap["init"] = init
-    st.on_response(_FakeResp(post_data="VerifyCaptchaV3",
-                             payload={"Result": {"VerifyCode": "F001",
-                                                 "VerifyResult": ok}}))
+    st.on_response(
+        _FakeResp(
+            post_data="VerifyCaptchaV3",
+            payload={"Result": {"VerifyCode": "F001", "VerifyResult": ok}},
+        )
+    )
     assert st.cap["trivial"] == expected_trivial
     assert st.cap["last_ok"] is ok
 
 
 def test_on_response_records_reject_payload_but_not_success():
     st = _AttemptState()
-    st.on_response(_FakeResp(post_data="VerifyCaptchaV3",
-                             payload={"Result": {"VerifyCode": "F001",
-                                                 "VerifyResult": False}}))
+    st.on_response(
+        _FakeResp(
+            post_data="VerifyCaptchaV3",
+            payload={"Result": {"VerifyCode": "F001", "VerifyResult": False}},
+        )
+    )
     assert st.cap["payload"] != ""
 
     st2 = _AttemptState()
-    st2.on_response(_FakeResp(post_data="VerifyCaptchaV3",
-                              payload={"Result": {"VerifyCode": "T001",
-                                                  "VerifyResult": True}}))
+    st2.on_response(
+        _FakeResp(
+            post_data="VerifyCaptchaV3",
+            payload={"Result": {"VerifyCode": "T001", "VerifyResult": True}},
+        )
+    )
     assert st2.cap["payload"] == ""
 
 
 def test_on_response_survives_malformed_json():
     """回调挂在事件循环上 —— 可恢复的畸形响应必须被吞掉，不能污染整页。"""
     st = _AttemptState()
-    st.on_response(_FakeResp(post_data="VerifyCaptchaV3"))   # json() 会抛
-    st.on_response(_FakeResp(post_data="InitCaptchaV3"))     # 这条不读 json
+    st.on_response(_FakeResp(post_data="VerifyCaptchaV3"))  # json() 会抛
+    st.on_response(_FakeResp(post_data="InitCaptchaV3"))  # 这条不读 json
     assert st.cap["verify"] == []
     assert st.cap["init"] == 1
 
@@ -335,31 +367,31 @@ def _runner(results):
 
 def test_retry_loop_stops_at_first_success(_no_real_sleep):
     run_once, tags = _runner([LoginResult(ok=True, jwt="j")])
-    res = _retry_loop(run_once, attempts=3, cooldown=15.0,
-                                    verbose=False, retry_hint="重试")
+    res = _retry_loop(run_once, attempts=3, cooldown=15.0, verbose=False, retry_hint="重试")
     assert res.ok is True and res.attempts_used == 1
     assert tags == ["_a1"]
     assert _no_real_sleep == []
 
 
 def test_retry_loop_uses_all_attempts_and_numbers_them(_no_real_sleep):
-    run_once, tags = _runner([LoginResult(ok=False, reason="r1"),
-                              LoginResult(ok=False, reason="r2"),
-                              LoginResult(ok=False, reason="r3")])
-    res = _retry_loop(run_once, attempts=3, cooldown=15.0,
-                                    verbose=False, retry_hint="重试")
+    run_once, tags = _runner(
+        [
+            LoginResult(ok=False, reason="r1"),
+            LoginResult(ok=False, reason="r2"),
+            LoginResult(ok=False, reason="r3"),
+        ]
+    )
+    res = _retry_loop(run_once, attempts=3, cooldown=15.0, verbose=False, retry_hint="重试")
     assert tags == ["_a1", "_a2", "_a3"]
     assert res.attempts_used == 3
     assert res.reason == "r3"
-    assert len(_no_real_sleep) == 2          # 最后一次失败后不再等
+    assert len(_no_real_sleep) == 2  # 最后一次失败后不再等
 
 
 def test_retry_loop_cooldown_grows_linearly(_no_real_sleep):
     """冷却 = `cooldown * (i+1) + 抖动[0,5)`。"""
-    run_once, _ = _runner([LoginResult(ok=False), LoginResult(ok=False),
-                           LoginResult(ok=False)])
-    _retry_loop(run_once, attempts=3, cooldown=15.0,
-                              verbose=False, retry_hint="重试")
+    run_once, _ = _runner([LoginResult(ok=False), LoginResult(ok=False), LoginResult(ok=False)])
+    _retry_loop(run_once, attempts=3, cooldown=15.0, verbose=False, retry_hint="重试")
     assert 15.0 <= _no_real_sleep[0] < 20.0
     assert 30.0 <= _no_real_sleep[1] < 35.0
 
@@ -367,8 +399,7 @@ def test_retry_loop_cooldown_grows_linearly(_no_real_sleep):
 def test_retry_loop_treats_attempts_zero_as_one(_no_real_sleep):
     """`max(1, attempts)` —— attempts=0 也要跑一次。"""
     run_once, tags = _runner([LoginResult(ok=False, reason="only")])
-    res = _retry_loop(run_once, attempts=0, cooldown=15.0,
-                                    verbose=False, retry_hint="重试")
+    res = _retry_loop(run_once, attempts=0, cooldown=15.0, verbose=False, retry_hint="重试")
     assert tags == ["_a1"]
     assert res.reason == "only"
 
@@ -383,16 +414,13 @@ def test_retry_loop_propagates_attempts_used_to_each_result(_no_real_sleep):
         seen.append(r)
         return r
 
-    _retry_loop(run_once, attempts=3, cooldown=15.0,
-                              verbose=False, retry_hint="重试")
+    _retry_loop(run_once, attempts=3, cooldown=15.0, verbose=False, retry_hint="重试")
     assert [r.attempts_used for r in seen] == [1, 2]
 
 
 def test_retry_loop_hint_appears_in_log(capsys, _no_real_sleep):
-    run_once, _ = _runner([LoginResult(ok=False, reason="boom"),
-                           LoginResult(ok=True)])
-    _retry_loop(run_once, attempts=2, cooldown=1.0,
-                              verbose=True, retry_hint="换新会话重试")
+    run_once, _ = _runner([LoginResult(ok=False, reason="boom"), LoginResult(ok=True)])
+    _retry_loop(run_once, attempts=2, cooldown=1.0, verbose=True, retry_hint="换新会话重试")
     out = capsys.readouterr().out
     assert "=== 尝试 1/2 ===" in out
     assert "冷却" in out and "换新会话重试" in out
@@ -402,32 +430,28 @@ def test_retry_loop_hint_appears_in_log(capsys, _no_real_sleep):
 # [4] Chrome 启动参数的注入面
 # ────────────────────────────────────────────────────────────────
 def test_launch_kwargs_defaults_to_module_constant(settings):
-    kw = _launch_kwargs(headless=True, chrome_args=None,
-                        executable_path=settings.chrome_path)
+    kw = _launch_kwargs(headless=True, chrome_args=None, executable_path=settings.chrome_path)
     assert kw["args"] is CHROME_ARGS
     assert kw["headless"] is True
     assert kw["executable_path"] == "/fake/chrome"
 
 
 def test_launch_kwargs_uses_injected_args(settings):
-    kw = _launch_kwargs(headless=False, chrome_args=["--x"],
-                        executable_path=settings.chrome_path)
+    kw = _launch_kwargs(headless=False, chrome_args=["--x"], executable_path=settings.chrome_path)
     assert kw["args"] == ["--x"]
 
 
 def test_launch_kwargs_copies_injected_list(settings):
     """注入的 list 被复制 —— 调用方事后改自己的 list 不该影响已建的参数。"""
     mine = ["--x"]
-    kw = _launch_kwargs(headless=False, chrome_args=mine,
-                        executable_path=settings.chrome_path)
+    kw = _launch_kwargs(headless=False, chrome_args=mine, executable_path=settings.chrome_path)
     mine.append("--y")
     assert kw["args"] == ["--x"]
 
 
 def test_empty_injection_is_respected_not_treated_as_absent(settings):
     """`chrome_args=[]` 是"不要任何参数"，不能被当成"没传"。"""
-    kw = _launch_kwargs(headless=False, chrome_args=[],
-                        executable_path=settings.chrome_path)
+    kw = _launch_kwargs(headless=False, chrome_args=[], executable_path=settings.chrome_path)
     assert kw["args"] == []
 
 
@@ -471,6 +495,7 @@ def test_session_defaults_to_none_meaning_module_constant(settings):
 # 这一组钉住"翻过来了"。**翻回去不会有任何报错**，只会让某次跑批
 # 悄悄变成有头（无人值守场景下还会干扰桌面），所以必须有用例守着。
 
+
 def test_login_defaults_to_headless():
     assert inspect.signature(browser_entry.login).parameters["headless"].default is True
 
@@ -511,7 +536,8 @@ def test_cli_defaults_to_headless_with_headful_optout(cli):
     """
     src = cli.read_text(encoding="utf-8")
     assert "_cli.add_headless_args(ap)" in src, (
-        f"{cli.name}: 没有接线 src.cli.add_headless_args —— 又手写了一份？")
+        f"{cli.name}: 没有接线 src.cli.add_headless_args —— 又手写了一份？"
+    )
 
     shared = (_ROOT / "src" / "cli.py").read_text(encoding="utf-8")
     assert 'ap.add_argument("--headless", action="store_true", default=True' in shared, (
@@ -545,8 +571,7 @@ def test_default_chrome_args_come_from_the_reader_module(monkeypatch, settings):
     assert browser_session.CHROME_ARGS is CHROME_ARGS
 
     monkeypatch.setattr(browser_session, "CHROME_ARGS", ["--patched"])
-    kw = _launch_kwargs(headless=True, chrome_args=None,
-                        executable_path=settings.chrome_path)
+    kw = _launch_kwargs(headless=True, chrome_args=None, executable_path=settings.chrome_path)
     assert kw["args"] == ["--patched"]
 
 
@@ -567,8 +592,7 @@ def test_patching_the_package_attribute_does_not_reach_launch_kwargs(monkeypatch
     import src.browser as pkg
 
     monkeypatch.setattr(pkg, "CHROME_ARGS", ["--should-not-arrive"])
-    kw = _launch_kwargs(headless=True, chrome_args=None,
-                        executable_path=settings.chrome_path)
+    kw = _launch_kwargs(headless=True, chrome_args=None, executable_path=settings.chrome_path)
     assert kw["args"] != ["--should-not-arrive"]
     assert kw["args"] is browser_session.CHROME_ARGS
 
