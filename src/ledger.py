@@ -83,8 +83,12 @@ def snapshot_path(when=None) -> Path:
     生产代码不该传。
     """
     t = time.localtime() if when is None else time.localtime(when)
-    return (LEDGER_DIR / RUNS_DIRNAME / time.strftime("%Y-%m-%d", t)
-            / f"{SNAPSHOT_STEM}-{time.strftime('%Y%m%d-%H%M%S', t)}.json")
+    return (
+        LEDGER_DIR
+        / RUNS_DIRNAME
+        / time.strftime("%Y-%m-%d", t)
+        / f"{SNAPSHOT_STEM}-{time.strftime('%Y%m%d-%H%M%S', t)}.json"
+    )
 
 
 def snapshot_paths() -> list:
@@ -100,8 +104,7 @@ def snapshot_paths() -> list:
     runs = LEDGER_DIR / RUNS_DIRNAME
     if not runs.is_dir():
         return []
-    found = [p for p in runs.glob(f"*/{SNAPSHOT_STEM}-*.json")
-             if SNAPSHOT_RE.match(p.name)]
+    found = [p for p in runs.glob(f"*/{SNAPSHOT_STEM}-*.json") if SNAPSHOT_RE.match(p.name)]
     return sorted(found, key=lambda p: (p.parent.name, p.name))
 
 
@@ -124,8 +127,7 @@ def ledger_path() -> Path:
     snaps = snapshot_paths()
     if snaps:
         return snaps[-1]
-    return (LEDGER_DIR / RUNS_DIRNAME / "__none__"
-            / f"{SNAPSHOT_STEM}-none.json")
+    return LEDGER_DIR / RUNS_DIRNAME / "__none__" / f"{SNAPSHOT_STEM}-none.json"
 
 
 def last_run_path() -> Path:
@@ -150,6 +152,7 @@ def is_ledger_path(path) -> bool:
         return Path(path).resolve().is_relative_to(LEDGER_DIR.resolve())
     except (OSError, ValueError):
         return False
+
 
 # 记录"优劣"排序：成功 > 跳过 > 失败。合并时不让失败盖掉成功。
 _RANK = {"success": 2, "skipped": 1}
@@ -222,10 +225,13 @@ def key_coverage(records, known_keys) -> tuple:
       别把"missing 为空"读成"数据没问题"。
     """
     return _coverage_of(
-        [r.get("api_key") for r in records
-         if isinstance(r, dict)
-         and str(r.get("api_key") or "").startswith(KEY_PREFIX)],
-        known_keys)
+        [
+            r.get("api_key")
+            for r in records
+            if isinstance(r, dict) and str(r.get("api_key") or "").startswith(KEY_PREFIX)
+        ],
+        known_keys,
+    )
 
 
 def account_coverage(records, known_emails) -> tuple:
@@ -245,9 +251,7 @@ def account_coverage(records, known_emails) -> tuple:
 
     ⚠ 与 `key_coverage` 一样，`missing` 是单向的（台账 − 清单）。
     """
-    return _coverage_of(
-        [r.get("email") for r in records if isinstance(r, dict)],
-        known_emails)
+    return _coverage_of([r.get("email") for r in records if isinstance(r, dict)], known_emails)
 
 
 # 覆盖不足时的退出码。**与 `run.py` 的"防静默缩水"护栏同码**（那边在
@@ -344,7 +348,7 @@ def merge_records(existing: list[dict], new: list[dict]):
     for rec in existing:
         email = rec.get("email")
         if email and email in idx:
-            continue                      # 同 email 的旧重复记录，留第一条
+            continue  # 同 email 的旧重复记录，留第一条
         if email:
             idx[email] = len(merged)
         merged.append(rec)
@@ -363,10 +367,10 @@ def merge_records(existing: list[dict], new: list[dict]):
         cur = merged[pos]
         r_new, r_old = rank(rec), rank(cur)
         if r_new > r_old:
-            merged[pos] = rec                     # 升级：整体替换（如 failed→success）
+            merged[pos] = rec  # 升级：整体替换（如 failed→success）
             upgraded += 1
         elif r_new == r_old:
-            union = {**cur, **rec}                # 同级：并集，新值胜出
+            union = {**cur, **rec}  # 同级：并集，新值胜出
             if union != cur:
                 merged[pos] = union
                 upgraded += 1
@@ -412,7 +416,7 @@ def merge_fragments(records: list[dict]) -> dict:
     台账，键顺序乱了读起来就费劲。
     """
     out: dict = {}
-    for rec in records:                       # 先按优先级把键序固定下来
+    for rec in records:  # 先按优先级把键序固定下来
         for k in rec:
             out.setdefault(k, _UNSET)
     # 低优先级先写、高优先级后写 —— 靠"最后落笔者胜"实现来源优先级，
@@ -436,7 +440,8 @@ def _guard_no_shrink(records: list[dict], existing) -> None:
     if len(records) < len(existing):
         raise ValueError(
             f"拒绝写盘：合并后 {len(records)} 条 < 原有 {len(existing)} 条"
-            f"（防静默缩水）。确认要覆盖请显式调用 save(..., existing=[])")
+            f"（防静默缩水）。确认要覆盖请显式调用 save(..., existing=[])"
+        )
 
 
 def _atomic_write(path, records: list[dict]) -> None:
@@ -457,8 +462,7 @@ def _atomic_write(path, records: list[dict]) -> None:
 
     具体实现已归一 —— 2026-09-20 起三处原子写盘共用 `fsutil.atomic_write_text`。
     """
-    fsutil.atomic_write_text(
-        path, json.dumps(records, ensure_ascii=False, indent=2))
+    fsutil.atomic_write_text(path, json.dumps(records, ensure_ascii=False, indent=2))
 
 
 def save(path, records: list[dict], *, existing: list[dict] = None) -> Path:
@@ -476,8 +480,9 @@ def save(path, records: list[dict], *, existing: list[dict] = None) -> Path:
     return p
 
 
-def save_snapshot(merged: list[dict], batch: list[dict] = None, *,
-                  existing: list[dict] = None, when=None) -> tuple:
+def save_snapshot(
+    merged: list[dict], batch: list[dict] = None, *, existing: list[dict] = None, when=None
+) -> tuple:
     """正式落盘：**全量快照** + **本批结果**。返回 `(快照路径, 本批路径)`。
 
     `快照路径` 同时就是**新的读源** —— 落盘之后 `ledger_path()` 会指向它。

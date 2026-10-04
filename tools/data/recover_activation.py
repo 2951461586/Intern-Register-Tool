@@ -69,7 +69,7 @@ def is_activation_failure(rec: dict) -> bool:
 
 def pick_from_ledger(path: Path) -> list[str]:
     data = json.loads(path.read_text(encoding="utf-8"))
-    if isinstance(data, dict):                     # 兼容 {"records": [...]}
+    if isinstance(data, dict):  # 兼容 {"records": [...]}
         data = data.get("records", [])
     out = []
     for rec in data:
@@ -78,55 +78,66 @@ def pick_from_ledger(path: Path) -> list[str]:
     return out
 
 
-def recover_one(mail: MailboxSource, email: str, *, proxy: str = None,
-                timeout: int = 120, log=print) -> dict:
+def recover_one(
+    mail: MailboxSource, email: str, *, proxy: str = None, timeout: int = 120, log=print
+) -> dict:
     """救一个账号。返回 `{"email", "verdict", "detail"}`。"""
     t0 = time.time()
     m = mail.wait_for_mail(email, timeout=timeout)
     if not m:
         why = getattr(mail, "last_error", "") or "在轮询窗口内没等到这封邮件"
         log(f"  ✗ 没拿到邮件：{why}")
-        return {"email": email, "verdict": "mail_missing", "detail": why,
-                "seconds": round(time.time() - t0, 1)}
+        return {
+            "email": email,
+            "verdict": "mail_missing",
+            "detail": why,
+            "seconds": round(time.time() - t0, 1),
+        }
 
     link = m.find_link("active", "activat", "verif", "confirm")
     if not link:
         log(f"  ✗ 邮件里没有激活链接（subject={m.subject[:40]!r}）")
-        return {"email": email, "verdict": "no_link",
-                "detail": f"subject={m.subject[:60]}",
-                "seconds": round(time.time() - t0, 1)}
+        return {
+            "email": email,
+            "verdict": "no_link",
+            "detail": f"subject={m.subject[:60]}",
+            "seconds": round(time.time() - t0, 1),
+        }
 
     sso = SSOClient(proxy=proxy)
     try:
         ok = sso.activate_from_url(link)
-    except Exception as ex:                                     # noqa: BLE001
+    except Exception as ex:  # noqa: BLE001
         detail = f"{type(ex).__name__}: {ex}"[:160]
         log(f"  ✗ 激活请求失败：{detail}")
-        return {"email": email, "verdict": "activate_error", "detail": detail,
-                "seconds": round(time.time() - t0, 1)}
+        return {
+            "email": email,
+            "verdict": "activate_error",
+            "detail": detail,
+            "seconds": round(time.time() - t0, 1),
+        }
 
     verdict = "recovered" if ok else "activate_rejected"
-    log(f"  {'✅ 救回' if ok else '✗ 服务端返回 success=false'}"
-        f"（{time.time() - t0:.1f}s）")
-    return {"email": email, "verdict": verdict, "detail": "",
-            "seconds": round(time.time() - t0, 1)}
+    log(f"  {'✅ 救回' if ok else '✗ 服务端返回 success=false'}（{time.time() - t0:.1f}s）")
+    return {"email": email, "verdict": verdict, "detail": "", "seconds": round(time.time() - t0, 1)}
 
 
 def main() -> int:
     ap = argparse.ArgumentParser(description="补激活：救回注册成功但激活失败的账号")
     ap.add_argument("--emails", help="逗号分隔的邮箱列表")
     ap.add_argument("--from", dest="src", help="从台账 JSON 自动挑候选")
-    ap.add_argument("--timeout", type=int, default=120,
-                    help="每个账号等邮件的最长秒数（默认 120）")
-    ap.add_argument("--no-slot", action="store_true",
-                    help="不用槽位代理（默认有槽位就用，与注册时出口保持一致）")
+    ap.add_argument("--timeout", type=int, default=120, help="每个账号等邮件的最长秒数（默认 120）")
+    ap.add_argument(
+        "--no-slot",
+        action="store_true",
+        help="不用槽位代理（默认有槽位就用，与注册时出口保持一致）",
+    )
     ap.add_argument("--dry-run", action="store_true", help="只列候选，不发激活请求")
-    ap.add_argument("--write", action="store_true",
-                    help="把救回的账号写回台账（默认只打印）")
-    ap.add_argument("--out", default=str(ledger.ledger_path()),
-                    help="台账路径（配合 --write）")
-    ap.add_argument("--report", default=str(ROOT / ".workbuddy-ai" / "exports"
-                                            / "activation_recovery.json"))
+    ap.add_argument("--write", action="store_true", help="把救回的账号写回台账（默认只打印）")
+    ap.add_argument("--out", default=str(ledger.ledger_path()), help="台账路径（配合 --write）")
+    ap.add_argument(
+        "--report", default=str(ROOT / ".workbuddy-ai" / "exports" / "activation_recovery.json")
+    )
     args = ap.parse_args()
 
     if args.emails:
@@ -171,8 +182,9 @@ def main() -> int:
         try:
             if pool:
                 lease = pool.acquire(timeout=config.IR_PROXY_SLOT_TIMEOUT)
-            results.append(recover_one(mail, email, proxy=(lease.url if lease else None),
-                                       timeout=args.timeout))
+            results.append(
+                recover_one(mail, email, proxy=(lease.url if lease else None), timeout=args.timeout)
+            )
         finally:
             if pool and lease:
                 pool.release(lease)
@@ -188,11 +200,19 @@ def main() -> int:
 
     rp = Path(args.report)
     rp.parent.mkdir(parents=True, exist_ok=True)
-    rp.write_text(json.dumps({
-        "ran_at": time.strftime("%Y-%m-%d %H:%M:%S"),
-        "targets": targets, "results": results,
-        "recovered": [r["email"] for r in ok],
-    }, ensure_ascii=False, indent=2), encoding="utf-8")
+    rp.write_text(
+        json.dumps(
+            {
+                "ran_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+                "targets": targets,
+                "results": results,
+                "recovered": [r["email"] for r in ok],
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
     # 同 probe_slots.py：`--report` 可指到仓库外，别让打印把成功运行搞崩。
     try:
         shown = rp.relative_to(ROOT)
@@ -207,23 +227,28 @@ def main() -> int:
         now = time.strftime("%Y-%m-%d %H:%M:%S")
         updates = []
         for r in ok:
-            updates.append({
-                "email": r["email"], "status": "success", "error": "",
-                "stages": {"register": "ok", "activate": "ok"},
-                "timings": {"activation_recovered_at": now},
-            })
+            updates.append(
+                {
+                    "email": r["email"],
+                    "status": "success",
+                    "error": "",
+                    "stages": {"register": "ok", "activate": "ok"},
+                    "timings": {"activation_recovered_at": now},
+                }
+            )
         merged, upgraded = ledger.merge_records(existing, updates)
         if ledger.is_ledger_path(out):
             # 目标在台账目录里 ⇒ 走台账目录：留一份日期/时间戳快照（随即成为
             # **新读源**），并把合并后的全量刷进 `latest.json`。
             # 这是"整本重写"而不是跑批，所以不传 `batch`（默认 = 全量）。
             snap, last = ledger.save_snapshot(merged, existing=existing)
-            print(f"台账已更新：{len(updates)} 条激活状态写回 {snap}"
-                  f"（upgraded={upgraded}）\n  本批结果 {last}")
+            print(
+                f"台账已更新：{len(updates)} 条激活状态写回 {snap}"
+                f"（upgraded={upgraded}）\n  本批结果 {last}"
+            )
         else:
             ledger.save(out, merged, existing=existing)
-            print(f"台账已更新：{len(updates)} 条激活状态写回 {out}"
-                  f"（upgraded={upgraded}）")
+            print(f"台账已更新：{len(updates)} 条激活状态写回 {out}（upgraded={upgraded}）")
     elif ok:
         print("（未加 --write，台账没改；想写回加 --write）")
 

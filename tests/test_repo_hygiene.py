@@ -57,8 +57,7 @@ def test_every_test_fixture_is_committable(rel):
     if not (ROOT / ".git").exists():
         pytest.skip("不是 git 检出（如 tarball 解压）—— .gitignore 规则不适用")
 
-    r = subprocess.run(["git", "check-ignore", "-q", rel],
-                       cwd=str(ROOT), capture_output=True)
+    r = subprocess.run(["git", "check-ignore", "-q", rel], cwd=str(ROOT), capture_output=True)
     assert r.returncode == 1, (
         f"{rel} 被 .gitignore 忽略了（check-ignore rc={r.returncode}）。\n"
         "后果：本地 pytest 全绿，**新克隆的仓库读不到这个文件** ⇒ 用例直接报错。\n"

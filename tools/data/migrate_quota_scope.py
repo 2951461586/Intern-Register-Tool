@@ -84,8 +84,7 @@ def load_email_to_ip(results_path: Path) -> dict[str, str]:
         else:
             unknown_port[m.group(1)] += 1
     if unknown_port:
-        print(f"⚠ 有端口的出口 IP 不在 SLOT_EGRESS_IPS 里，已跳过："
-              f"{dict(unknown_port)}")
+        print(f"⚠ 有端口的出口 IP 不在 SLOT_EGRESS_IPS 里，已跳过：{dict(unknown_port)}")
     return out
 
 
@@ -99,12 +98,10 @@ def read_ledger(path: Path) -> list[dict]:
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser(
-        description="把配额台账的 scope 从槽位位置号迁移成出口 IP")
+    ap = argparse.ArgumentParser(description="把配额台账的 scope 从槽位位置号迁移成出口 IP")
     ap.add_argument("--ledger", default=str(DEFAULT_LEDGER))
     ap.add_argument("--results", default=str(DEFAULT_RESULTS))
-    ap.add_argument("--apply", action="store_true",
-                    help="真迁移（默认只报告）。会自动备份原台账。")
+    ap.add_argument("--apply", action="store_true", help="真迁移（默认只报告）。会自动备份原台账。")
     args = ap.parse_args()
 
     ledger_path = Path(args.ledger)
@@ -129,11 +126,11 @@ def main() -> int:
                 moved += 1
             r["scope"] = ip
         elif old and not old.startswith(("slot",)):
-            pass                      # 已经是 IP 形式了，幂等
+            pass  # 已经是 IP 形式了，幂等
         else:
             if old:
-                unmapped.append(r)    # 有旧 scope 但关联不出真实出口
-            r["scope"] = ""           # 池化前那批：本来就没有出口归属
+                unmapped.append(r)  # 有旧 scope 但关联不出真实出口
+            r["scope"] = ""  # 池化前那批：本来就没有出口归属
         after[r.get("scope") or "<none>"] += 1
 
     # ── 报告 ──────────────────────────────────────────────────────
@@ -147,8 +144,7 @@ def main() -> int:
     show("迁移后 scope 分布（= 出口 IP）：", after)
     print(f"\n改动了 {moved} 条")
     if unmapped:
-        print(f"\n⚠ 有 {len(unmapped)} 条带着旧 scope 但关联不出真实出口，"
-              f"已清空 scope：")
+        print(f"\n⚠ 有 {len(unmapped)} 条带着旧 scope 但关联不出真实出口，已清空 scope：")
         for r in unmapped[:10]:
             print(f"   {r.get('email')}  old={r.get('scope')!r}")
 

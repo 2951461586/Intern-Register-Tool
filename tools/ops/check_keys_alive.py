@@ -72,8 +72,9 @@ DEFAULT_BACKOFF = 20.0
 DEFAULT_MAX_RETRY = 3
 
 
-def probe_models(key: str, *, backoff: float = DEFAULT_BACKOFF,
-                 max_retry: int = DEFAULT_MAX_RETRY) -> tuple:
+def probe_models(
+    key: str, *, backoff: float = DEFAULT_BACKOFF, max_retry: int = DEFAULT_MAX_RETRY
+) -> tuple:
     """`GET /v1/models`。返回 `(verdict, detail)`。
 
     🔴 **429 单独成一档，并且退避重试** —— 它不是 key 的问题，是"你打太快了"。
@@ -91,9 +92,12 @@ def probe_models(key: str, *, backoff: float = DEFAULT_BACKOFF,
     last = ""
     for attempt in range(max_retry + 1):
         try:
-            r = requests.get(f"{config.CHAT_API_BASE}/models",
-                             headers={"Authorization": f"Bearer {key}"}, timeout=30)
-        except Exception as ex:                               # noqa: BLE001
+            r = requests.get(
+                f"{config.CHAT_API_BASE}/models",
+                headers={"Authorization": f"Bearer {key}"},
+                timeout=30,
+            )
+        except Exception as ex:  # noqa: BLE001
             return _ak.VERDICT_ERROR, f"{type(ex).__name__}: {ex}"[:160]
 
         verdict = _ak.verdict_of_status(r.status_code)
@@ -112,7 +116,7 @@ def probe_models(key: str, *, backoff: float = DEFAULT_BACKOFF,
                 continue
             return verdict, f"{last}（退避重试 {attempt + 1} 次仍是 429）"
         return verdict, f"HTTP {r.status_code} {r.text[:120]}"
-    return _ak.VERDICT_ERROR, last                             # pragma: no cover
+    return _ak.VERDICT_ERROR, last  # pragma: no cover
 
 
 def probe_chat(key: str, model: str = None) -> tuple:
@@ -132,33 +136,53 @@ def probe_chat(key: str, model: str = None) -> tuple:
     if res.truncated:
         # 网关通了、模型也在推理，只是没留够 token 写正文 —— 不是 key 的问题
         return True, f"model={res.model} 正文被 max_tokens 截断（reasoning 占满）"
-    return True, (f"model={res.model} text={res.text[:20]!r}"
-                  if res.text else
-                  f"model={res.model} 正文为空 finish_reason={res.finish_reason!r}")
+    return True, (
+        f"model={res.model} text={res.text[:20]!r}"
+        if res.text
+        else f"model={res.model} 正文为空 finish_reason={res.finish_reason!r}"
+    )
 
 
 def main() -> int:
     ap = argparse.ArgumentParser(description="检查 API Key 存活性")
     ap.add_argument("--csv", default=str(DEFAULT_CSV), help="key 来源 CSV")
-    ap.add_argument("--ledger", default=str(DEFAULT_LEDGER),
-                    help="权威台账（只用来检查快照是否过期，不参与测试）")
+    ap.add_argument(
+        "--ledger",
+        default=str(DEFAULT_LEDGER),
+        help="权威台账（只用来检查快照是否过期，不参与测试）",
+    )
     ap.add_argument("--limit", type=int, default=0, help="只测前 N 把（0=全部）")
     ap.add_argument("--workers", type=int, default=8, help="并发数")
-    ap.add_argument("--interval", type=float, default=0.0,
-                    help="每把 key 之间的间隔秒数；>0 会**强制串行**"
-                         "（429 是降速率问题，不是降并发问题）")
-    ap.add_argument("--backoff", type=float, default=DEFAULT_BACKOFF,
-                    help=f"命中 429 后的退避基数秒（线性加长，封顶 "
-                         f"{_ak.RATE_LIMIT_BACKOFF_CAP:.0f}s）")
-    ap.add_argument("--max-retry", type=int, default=DEFAULT_MAX_RETRY,
-                    help="命中 429 时最多重试几次（0=不重试，直接报 rate_limited）")
-    ap.add_argument("--sample", type=int, default=3,
-                    help="抽样几把做真实推理（0=跳过）")
+    ap.add_argument(
+        "--interval",
+        type=float,
+        default=0.0,
+        help="每把 key 之间的间隔秒数；>0 会**强制串行**（429 是降速率问题，不是降并发问题）",
+    )
+    ap.add_argument(
+        "--backoff",
+        type=float,
+        default=DEFAULT_BACKOFF,
+        help=f"命中 429 后的退避基数秒（线性加长，封顶 {_ak.RATE_LIMIT_BACKOFF_CAP:.0f}s）",
+    )
+    ap.add_argument(
+        "--max-retry",
+        type=int,
+        default=DEFAULT_MAX_RETRY,
+        help="命中 429 时最多重试几次（0=不重试，直接报 rate_limited）",
+    )
+    ap.add_argument("--sample", type=int, default=3, help="抽样几把做真实推理（0=跳过）")
     ap.add_argument("--model", default=None, help="推理用的模型（默认 config 第一个）")
-    ap.add_argument("--out", default=str(DEFAULT_OUT),
-                    help="输出**目录**（工具会在其中写 keys_alive.json，不是文件路径）")
-    ap.add_argument("--allow-partial", action="store_true",
-                    help="允许快照只覆盖台账的一部分（默认覆盖不足会返回退出码 3）")
+    ap.add_argument(
+        "--out",
+        default=str(DEFAULT_OUT),
+        help="输出**目录**（工具会在其中写 keys_alive.json，不是文件路径）",
+    )
+    ap.add_argument(
+        "--allow-partial",
+        action="store_true",
+        help="允许快照只覆盖台账的一部分（默认覆盖不足会返回退出码 3）",
+    )
     args = ap.parse_args()
 
     with Path(args.csv).open(encoding="utf-8-sig") as f:
@@ -169,8 +193,10 @@ def main() -> int:
     rows = [r for r in all_rows if (r.get("api_key") or "").startswith(KEY_PREFIX)]
     skipped = len(all_rows) - len(rows)
     if skipped:
-        print(f"⚠ 跳过 {skipped}/{len(all_rows)} 行：api_key 缺失或不以 '{KEY_PREFIX}' 开头"
-              f"（若这是意外，说明 CSV 列名或 key 前缀变了，别当成'没有死 key'）")
+        print(
+            f"⚠ 跳过 {skipped}/{len(all_rows)} 行：api_key 缺失或不以 '{KEY_PREFIX}' 开头"
+            f"（若这是意外，说明 CSV 列名或 key 前缀变了，别当成'没有死 key'）"
+        )
 
     # ── 文件级防静默缩水：整个 CSV 可能已经过期 ────────────────────
     # 上面那段管的是**行级**缩水（分母变了）；这段管**文件级**缩水 ——
@@ -178,25 +204,30 @@ def main() -> int:
     # 实测（2026-09-20）：快照 53 把 / 台账 407 把，跑出"53/53 全绿"，
     # 看着没问题，其实完全没覆盖当时那一批。
     ledger_n, csv_n, missing = ledger.key_coverage(
-        ledger.load_existing(args.ledger), {r["api_key"] for r in rows})
+        ledger.load_existing(args.ledger), {r["api_key"] for r in rows}
+    )
     # 判据放在 `src/ledger.py`（纯函数），这里只接线 —— 理由同 `quota.shortfall_hint`：
     # 内联分支没法单独测，而测试链不该 import 本脚本（它要发真实网络请求）。
     gap_rc = ledger.coverage_exit_code(missing, allow_partial=args.allow_partial)
-    coverage = ledger.coverage_block(ledger_n, csv_n, missing,
-                                     ledger=args.ledger, snapshot=args.csv)
+    coverage = ledger.coverage_block(
+        ledger_n, csv_n, missing, ledger=args.ledger, snapshot=args.csv
+    )
     if missing:
-        print(f"⚠ 导出快照**落后于台账**：台账 {ledger_n} 把带 key / 快照 {csv_n} 把，"
-              f"本次结论**不覆盖**台账里多出的 {len(missing)} 把。")
+        print(
+            f"⚠ 导出快照**落后于台账**：台账 {ledger_n} 把带 key / 快照 {csv_n} 把，"
+            f"本次结论**不覆盖**台账里多出的 {len(missing)} 把。"
+        )
         print(f"    快照：{args.csv}")
         print(f"    台账：{args.ledger}")
-        print("    ⇒ 这不是'没有死 key'，是**没测到**。"
-              "要核验全量请先按当前台账重新导出，或改用别的取样口径。")
+        print(
+            "    ⇒ 这不是'没有死 key'，是**没测到**。"
+            "要核验全量请先按当前台账重新导出，或改用别的取样口径。"
+        )
         if gap_rc:
-            print(f"    ⇒ 退出码 {gap_rc}（护栏触发）。"
-                  f"确实只想核验一个子集请加 --allow-partial。")
+            print(f"    ⇒ 退出码 {gap_rc}（护栏触发）。确实只想核验一个子集请加 --allow-partial。")
 
     if args.limit:
-        rows = rows[:args.limit]
+        rows = rows[: args.limit]
     if not rows:
         print(f"✗ 从 {args.csv} 读不到 key（共 {len(all_rows)} 行）")
         return 1
@@ -214,28 +245,31 @@ def main() -> int:
         print("   429 会被退避重试吸收，但结果里仍可能出现 `rate_limited` 档，")
         print("   那些 key 的存活状态是**未知**，不是失败。核验存活率请用 --interval 5。")
 
-    mode = (f"串行 + 间隔 {args.interval}s" if args.interval > 0
-            else f"并发 {args.workers}")
+    mode = f"串行 + 间隔 {args.interval}s" if args.interval > 0 else f"并发 {args.workers}"
     print(f"检查 {len(rows)} 把 key（{mode}）→ {args.csv}")
     t0 = time.time()
     out = {}
 
     def _record(r: dict, verdict: str, detail: str) -> None:
-        out[r["api_key"]] = {"email": r["email"], "verdict": verdict,
-                             "detail": detail}
+        out[r["api_key"]] = {"email": r["email"], "verdict": verdict, "detail": detail}
 
     if args.interval > 0:
         # 串行：每把之间隔 interval 秒。**最后一把之后不睡**，别白等。
         for i, r in enumerate(rows):
-            verdict, detail = probe_models(r["api_key"], backoff=args.backoff,
-                                           max_retry=args.max_retry)
+            verdict, detail = probe_models(
+                r["api_key"], backoff=args.backoff, max_retry=args.max_retry
+            )
             _record(r, verdict, detail)
             if i < len(rows) - 1:
                 time.sleep(args.interval)
     else:
         with ThreadPoolExecutor(max_workers=args.workers) as ex:
-            futs = {ex.submit(probe_models, r["api_key"], backoff=args.backoff,
-                              max_retry=args.max_retry): r for r in rows}
+            futs = {
+                ex.submit(
+                    probe_models, r["api_key"], backoff=args.backoff, max_retry=args.max_retry
+                ): r
+                for r in rows
+            }
             for f in as_completed(futs):
                 r = futs[f]
                 verdict, detail = f.result()
@@ -249,8 +283,10 @@ def main() -> int:
 
     rate = (len(out) * 60.0 / dt) if dt else 0.0
     print(f"\n{'=' * 70}")
-    print(f"存活 {len(alive)}/{len(out)}   死亡 {len(dead)}   "
-          f"限流 {len(rl)}   异常 {len(err)}   （{dt:.1f}s，{rate:.1f} 把/分）")
+    print(
+        f"存活 {len(alive)}/{len(out)}   死亡 {len(dead)}   "
+        f"限流 {len(rl)}   异常 {len(err)}   （{dt:.1f}s，{rate:.1f} 把/分）"
+    )
     if dead:
         print("\n死亡的 key（前 10）—— 只有 401/403 会进这里：")
         for k in dead[:10]:
@@ -275,29 +311,44 @@ def main() -> int:
             out[k]["chat_ok"] = ok
             out[k]["chat_detail"] = detail
             chat_ok += ok
-            chat_bad += (not ok)
+            chat_bad += not ok
             print(f"  {'✓' if ok else '✗'} {out[k]['email']:38s} {detail}")
 
-    print(f"\n结论：{len(alive)}/{len(out)} 把 key 通过鉴权"
-          + (f"；**{len(rl)} 把限流、存活状态未知**" if rl else "")
-          + (f"；抽样推理 {chat_ok}/{chat_ok + chat_bad} 成功" if args.sample else ""))
+    print(
+        f"\n结论：{len(alive)}/{len(out)} 把 key 通过鉴权"
+        + (f"；**{len(rl)} 把限流、存活状态未知**" if rl else "")
+        + (f"；抽样推理 {chat_ok}/{chat_ok + chat_bad} 成功" if args.sample else "")
+    )
     print("=" * 70)
 
     op = Path(args.out)
     op.mkdir(parents=True, exist_ok=True)
     rep = op / "keys_alive.json"
-    rep.write_text(json.dumps(
-        {"checked_at": time.strftime("%Y-%m-%d %H:%M:%S"),
-         "total": len(out), "alive": len(alive), "dead": len(dead),
-         # 🔴 429 单独进 artifact：它**不是** key 的结论，而是"这次测法太快了"。
-         #    混进 dead/error 都会让事后单独打开这份 JSON 的人读错。
-         "rate_limited": len(rl), "error": len(err),
-         "interval_s": args.interval, "backoff_s": args.backoff,
-         "chat_sample_ok": chat_ok, "chat_sample_fail": chat_bad,
-         # 🔴 `coverage` 必须进 artifact：光打印的话，几天后单独打开这份 JSON
-         #    就是"total=53, alive=53"，看不出它只覆盖了台账的 53/605。
-         "coverage": coverage,
-         "keys": out}, ensure_ascii=False, indent=2), encoding="utf-8")
+    rep.write_text(
+        json.dumps(
+            {
+                "checked_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+                "total": len(out),
+                "alive": len(alive),
+                "dead": len(dead),
+                # 🔴 429 单独进 artifact：它**不是** key 的结论，而是"这次测法太快了"。
+                #    混进 dead/error 都会让事后单独打开这份 JSON 的人读错。
+                "rate_limited": len(rl),
+                "error": len(err),
+                "interval_s": args.interval,
+                "backoff_s": args.backoff,
+                "chat_sample_ok": chat_ok,
+                "chat_sample_fail": chat_bad,
+                # 🔴 `coverage` 必须进 artifact：光打印的话，几天后单独打开这份 JSON
+                #    就是"total=53, alive=53"，看不出它只覆盖了台账的 53/605。
+                "coverage": coverage,
+                "keys": out,
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
     print(f"报告已落盘 {rep}")
     return gap_rc
 
