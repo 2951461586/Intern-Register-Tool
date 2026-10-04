@@ -78,6 +78,24 @@ def _module_file(mod: str) -> Path | None:
     return None
 
 
+def _first_party_tops() -> set[str]:
+    """仓库**自己**的顶层包名（= 根目录下带 `__init__.py` 的目录）。
+
+    🔴 为什么需要它：`from src.browser.constants import MICRO_MOVE` 里的
+      `MICRO_MOVE` 是个符号、没有对应文件，`_module_file()` 解析会落空。
+      若把落空的一律当第三方，本项目的符号就会被误报成外部依赖。
+
+    ⚠ 必须**动态**算，不能写死 `{"src"}` —— 写死的话，哪天把共享叶子包
+      （`common/`）移出 `src/`，它就会被当成第三方包混进 `found`，
+      报出一个和真因无关的失败。
+    """
+    return {
+        p.name
+        for p in ROOT.iterdir()
+        if p.is_dir() and (p / "__init__.py").is_file()
+    }
+
+
 def _resolve_relative(pkg_parts: list[str], level: int, module: str | None) -> str:
     """把相对导入解析成绝对模块名。
 
@@ -179,9 +197,10 @@ def _collect(path: Path, chain: tuple[str, ...], found: dict[str, str],
                 _collect(f, chain + (mod,), found, visited)
                 continue
 
-            # 解析不到文件：本项目内的（`src`）多半是**符号**而非模块，跳过
+            # 解析不到文件：本项目自己的顶层包（`src` / 将来的 `common`）
+            # 多半是**符号**而非模块，跳过
             # （例：`from src.browser.constants import MICRO_MOVE` 里的 MICRO_MOVE）
-            if top == "src":
+            if top in _first_party_tops():
                 continue
 
             found.setdefault(top, " → ".join(chain + (mod,)))
@@ -333,3 +352,141 @@ def test_the_scanner_itself_detects_a_planted_dependency(tmp_path):
 def test_relative_import_resolution(pkg_parts, level, module, expect):
     """相对导入解析 —— 它是整个扫描器的地基，单独钉住。"""
     assert _resolve_relative(pkg_parts, level, module) == expect
+
+
+# ─────────────────────────────────────────────────────────────────
+# 包边界：`src/browser/` 与共享叶子 `config`
+# ─────────────────────────────────────────────────────────────────
+# 为什么单独钉这两条
+# ------------------
+# pi-lens 的评审图把 `src <-> src/browser` 报成一个环。**文件级其实没有环** ——
+# 环是目录粒度的，而它之所以良性（不可传递），只靠两个前提：
+#
+#   ① `src/browser/**` 只从 `src/` 里拿 `config` 这一样东西；
+#   ② `src/config.py` 自己是叶子（只依赖 stdlib）。
+#
+# 两条同时成立时 `browser → config → ∅`，环永远闭合不了。任何一条被破坏
+# （比如哪天有人给 browser 加了 `from .. import quota`），环就变成可传递的
+# **真环**，症状是 import 顺序相关的诡异失败。
+#
+# ⚠ 这里断言的是**当前设计**，不是"唯一正确的设计"。改动它必须是有意的。
+
+BROWSER_DIR = ROOT / "src" / "browser"
+
+# 🔴 `src/browser/**` 允许从 `src/` 里 import 的模块。
+#    初始只放行 `config`；2026-10-04 的参数注入改造（阶段 A）之后这里
+#    会收窄成空集 —— 那时 browser 对 `src/` 的依赖面为零。
+ALLOWED_SRC_IMPORTS_FOR_BROWSER: set[str] = {"src.config"}
+
+
+def _browser_files() -> list[Path]:
+    return sorted(BROWSER_DIR.glob("*.py"))
+
+
+def _imports_in_source(src: str, pkg_parts: list[str]) -> list[tuple[int, str]]:
+    """源码文本里**全部** import → `[(行号, 绝对模块名), ...]`。
+
+    🔴 与 `_module_level_imports` 相反：这里**要**递归进函数体。
+      依赖边就是依赖边，包不包在函数里不影响 DAG —— `src/browser/waf.py`
+      的 `from .. import config` 恰好就在函数体内，漏掉它就等于漏掉一条回边。
+
+    ⚠ 相对导入会同时产出**裸包名与逐符号名**（`from .. import config`
+      → `"src"` 与 `"src.config"`）。调用方看逐符号名即可；裸包名是
+      包锚点，不是一条真实依赖。
+    """
+    tree = ast.parse(src)
+    out: list[tuple[int, str]] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            out += [(node.lineno, a.name) for a in node.names]
+        elif isinstance(node, ast.ImportFrom):
+            if node.level:
+                base = _resolve_relative(pkg_parts, node.level, node.module)
+            else:
+                base = node.module or ""
+            out.append((node.lineno, base))
+            out += [(node.lineno, f"{base}.{a.name}" if base else a.name)
+                    for a in node.names]
+    return out
+
+
+def _all_imports(path: Path) -> list[tuple[int, str]]:
+    return _imports_in_source(
+        path.read_text(encoding="utf-8", errors="replace"), _pkg_parts(path)
+    )
+
+
+def test_the_all_imports_scanner_sees_function_level_relative_imports():
+    """变异验证：证明 `_imports_in_source` **真的**看得见函数体内的相对 import。
+
+    ⚠ 复用 `_module_level_imports`（那个刻意跳过函数体）来写这条规则的话，
+      `waf.py` 的回边会被静默漏掉 —— 边界断言就变成了假绿。
+    """
+    mods = [m for _, m in _imports_in_source(
+        "def f():\n    from .. import config\n", ["src", "browser"])]
+    assert "src.config" in mods, "扫描器漏掉了函数体内的相对 import"
+
+    mods2 = [m for _, m in _imports_in_source(
+        "from .constants import CHROME_ARGS\n", ["src", "browser"])]
+    assert "src.browser.constants" in mods2
+    assert "src.browser.constants.CHROME_ARGS" in mods2
+
+
+def test_the_browser_boundary_scan_has_a_non_empty_surface():
+    """给扫描面自己的守卫：目录改名 / 清空会让下面那条**静默变成空断言**。"""
+    files = _browser_files()
+    assert files, f"没扫到 {BROWSER_DIR}/*.py —— 边界规则会静默失效（假绿）"
+    assert sum(len(_all_imports(p)) for p in files) > 0, (
+        "扫描到的 import 为 0 —— 扫描器坏了，边界规则不再证明任何事"
+    )
+
+
+def test_browser_src_boundary_is_respected():
+    """`src/browser/**` 对 `src/` 的依赖只许是 `ALLOWED_SRC_IMPORTS_FOR_BROWSER`。
+
+    失败时说明：`src/browser/` 里出现了新的、指向父包 `src/` 的 import。
+    **修法**：不要往 `ALLOWED_SRC_IMPORTS_FOR_BROWSER` 里加 —— 那会让
+    `src <-> src/browser` 从良性环变成可传递的真环。改成从边界注入
+    （见 `src/browser/settings.py` 的 `BrowserSettings`），或把共享叶子
+    移到 `src/` 之外的包。
+    """
+    offenders: list[str] = []
+    for path in _browser_files():
+        for line, mod in _all_imports(path):
+            # `src` 是包锚点，`src.browser.*` 是包内
+            if mod == "src" or mod.startswith("src.browser"):
+                continue
+            if not mod.startswith("src."):
+                continue
+            if mod not in ALLOWED_SRC_IMPORTS_FOR_BROWSER:
+                offenders.append(f"  ✗ {_rel(path)}:{line}  import {mod}")
+
+    assert not offenders, (
+        "src/browser/ 越过了对 src/ 的边界：\n" + "\n".join(sorted(set(offenders)))
+        + f"\n\n当前放行：{sorted(ALLOWED_SRC_IMPORTS_FOR_BROWSER) or '（空集）'}"
+        + "\n修法：改成从边界注入（src/browser/settings.py），"
+        + "不要把这个名字加进放行集合。"
+    )
+
+
+def test_config_module_stays_a_leaf():
+    """`src/config.py` 的依赖面**只有 stdlib** —— 它是整个 DAG 的叶子。
+
+    这条是上面那条的地基：`src/browser → src.config` 之所以不构成环，
+    全靠 `src.config` 不反向依赖任何本项目模块。一旦它 import 了 `src.browser`
+    或 `src.quota`，环立刻变成真的。
+    """
+    offenders: list[str] = []
+    for line, mod in _all_imports(ROOT / "src" / "config.py"):
+        top = mod.split(".")[0]
+        if top in STDLIB or top == "__future__":
+            continue
+        if top in _first_party_tops():
+            offenders.append(f"  ✗ src/config.py:{line}  import {mod}")
+
+    assert not offenders, (
+        "src/config.py 不再是叶子（依赖了本项目内的模块）：\n"
+        + "\n".join(offenders)
+        + "\n\n`config` 必须只依赖 stdlib —— 否则 src <-> src/browser 的"
+        "良性环假设不成立。"
+    )
