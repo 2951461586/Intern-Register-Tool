@@ -83,6 +83,7 @@ from .constants import (
 )
 from .entry import login
 from .session import BrowserSession
+from .settings import BrowserSettings
 from .state import LoginResult
 from .urls import build_login_url
 
@@ -90,6 +91,7 @@ __all__ = [
     # 公共 API
     "login",
     "BrowserSession",
+    "BrowserSettings",
     "LoginResult",
     "build_login_url",
     # 可调常量（探针读取；全部可用环境变量覆盖，见 constants.py）

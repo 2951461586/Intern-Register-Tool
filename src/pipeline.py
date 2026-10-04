@@ -421,7 +421,7 @@ class AccountRecord:
 # Stage 1+2：建邮箱 → 注册 → 收信激活（纯 HTTP）
 # ────────────────────────────────────────────────────────────────
 def stage_register(mail: MailboxSource, sso: SSOClient, rec: AccountRecord,
-                   *, mail_domain: str = None, log=print, gate=None,
+                   *, mail_domain: str | None = None, log=print, gate=None,
                    should_stop=None, quota_scope: str = "") -> bool:
     """gate: 可选的限速闸门（callable）。在真正调用 register/byEmail 前触发，
     用于把注册速率钉死在安全区间内（见 REG_MIN_INTERVAL）。
@@ -572,12 +572,30 @@ def stage_register(mail: MailboxSource, sso: SSOClient, rec: AccountRecord,
     return True
 
 
+def browser_settings():
+    """browser 层的**注入面**（`BrowserSettings`，见 `src/browser/settings.py`）。
+
+    🔴 每次调用都**重建**，不做模块级常量：`BrowserSettings` 是冻结快照，
+       而 `tests/test_config_override.py` 钉住了"本项目大量用
+       `monkeypatch.setattr(config, "X", v)` 改配置"。模块级构造会在 import
+       那一刻把值定死，那些 setattr 对 browser 就会**静默失效** ——
+       正是那条测试要防的失效形态。每次重建的代价只是 5 次属性读取。
+
+    ⚠ `src/browser` ㉕是用的时候才 import（与下面两处延迟 import 同一理由）：
+      纯 HTTP 阶段（注册/激活）不需要浏览器，不该把 `constants.py` 的
+      `os.getenv` 求值拖进那条路径。
+    """
+    from .browser.settings import BrowserSettings
+
+    return BrowserSettings.from_config(config)
+
+
 # ────────────────────────────────────────────────────────────────
 # Stage 3+4+5：登录 → 领额度 → 建 Key → 校验
 # ────────────────────────────────────────────────────────────────
 def stage_login_key(rec: AccountRecord, *, session=None, headless: bool = True,
                     key_name: str = "default", verbose: bool = True,
-                    screenshot_prefix: str = None, log=print,
+                    screenshot_prefix: str | None = None, log=print,
                     verify: bool = True) -> bool:
     """Stage 3+4+5。
 
@@ -605,6 +623,7 @@ def stage_login_key(rec: AccountRecord, *, session=None, headless: bool = True,
             from .browser import login as browser_login
 
             res = browser_login(rec.email, rec.password, headless=headless,
+                                settings=browser_settings(),
                                 screenshot_prefix=screenshot_prefix, verbose=verbose)
         if not res.ok:
             raise RuntimeError(res.reason or "login failed")
@@ -716,8 +735,8 @@ def verify_keys(records: list, *, verbose: bool = True, log=print) -> None:
 # 单账号
 # ────────────────────────────────────────────────────────────────
 def run_one(*, headless: bool = True, key_name: str = "default",
-            mail_domain: str = None, verbose: bool = True,
-            screenshot_prefix: str = None) -> AccountRecord:
+            mail_domain: str | None = None, verbose: bool = True,
+            screenshot_prefix: str | None = None) -> AccountRecord:
     """完整跑通一个账号（顺序执行，便于调试）。"""
     rec = AccountRecord(created_at=time.strftime("%Y-%m-%d %H:%M:%S"))
 
@@ -742,9 +761,9 @@ def run_one(*, headless: bool = True, key_name: str = "default",
 # 批量：两段式流水线
 # ────────────────────────────────────────────────────────────────
 def run_batch(*, count: int, workers: int = 2, headless: bool = True,
-              key_name: str = "default", mail_domain: str = None,
-              verbose: bool = True, screenshot_prefix: str = None,
-              reg_concurrency: int = None,
+              key_name: str = "default", mail_domain: str | None = None,
+              verbose: bool = True, screenshot_prefix: str | None = None,
+              reg_concurrency: int | None = None,
               ignore_quota: bool = False) -> list[AccountRecord]:
     """批量注册，注册阶段与浏览器阶段流水线并行。
 
@@ -824,7 +843,8 @@ def run_batch(*, count: int, workers: int = 2, headless: bool = True,
         from .browser import BrowserSession
 
         try:
-            with BrowserSession(headless=headless) as sess:
+            with BrowserSession(headless=headless,
+                                settings=browser_settings()) as sess:
                 if verbose:
                     with print_lock:
                         print(f"[worker {wid + 1}] browser ready "

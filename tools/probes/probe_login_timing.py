@@ -42,7 +42,7 @@ from pathlib import Path
 
 from _path import ROOT  # noqa: F401  （副作用：把 tools/ 与仓库根加进 sys.path）
 
-from src import browser  # noqa: E402
+from src import browser, config  # noqa: E402
 from src.mailbox import make_source  # noqa: E402
 from src.pipeline import AccountRecord, stage_register  # noqa: E402
 from src.sso import SSOClient  # noqa: E402
@@ -93,7 +93,8 @@ def main():
             continue
 
         res = browser.login(rec.email, rec.password, headless=True,
-                                  timeout=90, attempts=1, verbose=False)
+                                  timeout=90, attempts=1, verbose=False,
+                                  settings=browser.BrowserSettings.from_config(config))
         cs = res.captcha_stage or {}
         tm = res.timings or {}
         stages, prev = {}, 0

@@ -373,10 +373,16 @@ def test_relative_import_resolution(pkg_parts, level, module, expect):
 
 BROWSER_DIR = ROOT / "src" / "browser"
 
-# 🔴 `src/browser/**` 允许从 `src/` 里 import 的模块。
-#    初始只放行 `config`；2026-10-04 的参数注入改造（阶段 A）之后这里
-#    会收窄成空集 —— 那时 browser 对 `src/` 的依赖面为零。
-ALLOWED_SRC_IMPORTS_FOR_BROWSER: set[str] = {"src.config"}
+# 🔴 `src/browser/**` 允许从 `src/` 里 import 的模块 —— **空集**。
+#    2026-10-04 之前这里是 `{"src.config"}`（browser 直接读 `config` 的
+#    `CHROME_PATH` / `SSO_BASE` / ...）。那天做了参数注入改造（阶段 A）：
+#    browser 改从边界收 `BrowserSettings`（`src/browser/settings.py`），
+#    回边归零，这里随之收窄。
+#
+#    ⇒ 现在 `src -> src/browser` 是**单向边**，目录粒度的环不存在了。
+#    ⚠ 配对的 `test_config_module_stays_a_leaf` 仍必须绿：`config` 是叶子时
+#      `src/browser → src.config` 也无害，但那时环又回来了 —— 两条一起看才完整。
+ALLOWED_SRC_IMPORTS_FOR_BROWSER: set[str] = set()
 
 
 def _browser_files() -> list[Path]:

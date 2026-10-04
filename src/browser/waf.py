@@ -24,8 +24,11 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from .settings import BrowserSettings
 
-def solve_acw_challenge(challenge_html: str, proxy: str = "") -> str:
+
+def solve_acw_challenge(challenge_html: str, proxy: str = "", *,
+                        settings: BrowserSettings) -> str:
     """把挑战页交给真实 Chrome 当**文档**加载，取回 `acw_sc__v2`。
 
     拿不到就返回 `""`（**不抛**）—— 由调用方决定怎么报错。这样本函数可以
@@ -39,19 +42,23 @@ def solve_acw_challenge(challenge_html: str, proxy: str = "") -> str:
 
     `proxy` 为空表示直连（`new_context` 不挂代理）。槽位池场景必须传具体值 ——
     挑战是**按出口 IP** 下发的，换 IP 解盾没有意义。
+
+    `settings`（阶段 A 起必填）：Chrome 路径与 SSO 基础 URL 的注入面 ——
+    本模块原先 `from .. import config`（回边），见 `settings.py`。
+    调用方（`src/sso.py`）用 `functools.partial` 把它**提前绑好**，
+    从而让"解盾器可注入"这个接口（`waf_solver=(html, proxy) -> str`）保持不变。
     """
     from playwright.sync_api import sync_playwright
 
-    from .. import config
     from .constants import CHROME_ARGS
 
-    if not Path(config.CHROME_PATH).is_file():
+    if not Path(settings.chrome_path).is_file():
         return ""
 
     acw = ""
     with sync_playwright() as p:
         browser = p.chromium.launch(
-            executable_path=config.CHROME_PATH, headless=True, args=list(CHROME_ARGS)
+            executable_path=settings.chrome_path, headless=True, args=list(CHROME_ARGS)
         )
         try:
             # 显式传参而不是摊开一个 dict：摊开会让类型检查器把整个 dict 的
@@ -61,7 +68,8 @@ def solve_acw_challenge(challenge_html: str, proxy: str = "") -> str:
             else:
                 ctx = browser.new_context(viewport=None)
             page = ctx.new_page()
-            page.goto(f"{config.SSO_BASE}/register", wait_until="domcontentloaded", timeout=60000)
+            page.goto(f"{settings.sso_base}/register",
+                      wait_until="domcontentloaded", timeout=60000)
             page.wait_for_timeout(800)
             page.set_content(challenge_html, wait_until="domcontentloaded")
             for _ in range(10):

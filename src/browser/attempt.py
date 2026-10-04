@@ -22,6 +22,7 @@ from .constants import (
     TYPE_DELAY_LO,
     UI_WAIT_MS,
 )
+from .settings import BrowserSettings
 from .state import LoginResult, _AttemptState
 from .urls import build_login_url
 
@@ -30,13 +31,16 @@ from .urls import build_login_url
 # 一次尝试的 8 个步骤
 # 切点不是我发明的 —— 来自原注释里的编号 `1)~8)` 与 mark() 埋点
 # ────────────────────────────────────────────────────────────────
-def _step_open_form(page, st: _AttemptState):
+def _step_open_form(page, st: _AttemptState, settings: BrowserSettings):
     """导航到登录页 → 切"账号登录" → 切"密码登录" tab，直到输入框就绪。
 
     返回 `acc_box`（账号输入框 locator），供 `_step_type_credentials` 复用 ——
     原实现就是在这一步创建、下一步复用的，这里保持同一对象。
+
+    `settings` 只为拼登录 URL（见 `urls.build_login_url`）—— 阶段 A 起
+    由 `_run_attempt` 从边界透传，本模块不再自己读 config。
     """
-    page.goto(build_login_url(), wait_until="domcontentloaded", timeout=60000)
+    page.goto(build_login_url(settings), wait_until="domcontentloaded", timeout=60000)
     st.mark("goto")
 
     # 🔬 预加载实验：页面加载后先闲置一段再操作（原理见 PREWARM_MS）。
@@ -228,12 +232,16 @@ def _build_result(st: _AttemptState, *, cookies: dict, waited: int) -> LoginResu
 # 在给定 browser 上跑一次尝试（自带 context 生命周期）
 # ────────────────────────────────────────────────────────────────
 def _run_attempt(browser, *, account: str, password: str, headless: bool,
-                 timeout: int, screenshot_prefix: str = None,
+                 timeout: int, settings: BrowserSettings,
+                 screenshot_prefix: str | None = None,
                  verbose: bool = False, tag: str = "") -> LoginResult:
     """在给定 browser 上跑一次登录尝试。
 
     这里**只负责编排**：建 context → 注册响应回调 → 依次调用 8 个步骤 → 折结果。
     每一步的实现见上面的 `_step_*`，状态在 `_AttemptState`。
+
+    `settings`：阶段 A 起由调用方注入（`entry.login` / `BrowserSession`），
+    往 `_step_open_form` 透传。本模块对 `src/` 无依赖（见 `settings.py`）。
     """
     st = _AttemptState(verbose=verbose)
 
@@ -261,7 +269,7 @@ def _run_attempt(browser, *, account: str, password: str, headless: bool,
     page.on("response", st.on_response)
 
     try:
-        acc_box = _step_open_form(page, st)
+        acc_box = _step_open_form(page, st, settings)
         _step_type_credentials(page, st, acc_box, account, password)
         _step_accept_agreements(page, st)
 

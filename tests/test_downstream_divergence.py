@@ -73,8 +73,11 @@ class _FakeSession:
 
     launch_ms = 42
 
-    def __init__(self, headless=True):
+    def __init__(self, headless=True, *, settings=None):
+        # 阶段 A 起 `BrowserSession` 还收 `settings`（注入面）。假件不关心配置，
+        # 但**必须**接受它 —— 否则 pipeline 那边一调用就 TypeError。
         self.headless = headless
+        self.settings = settings
 
     def __enter__(self):
         return self
@@ -172,11 +175,18 @@ def _load_downstream_module(monkeypatch):
     再用 `spec_from_file_location` 单独加载。
     """
     boot = types.ModuleType("_bootstrap")
-    boot.ROOT = REPO
+    # 走 `__dict__` 而不是 `boot.ROOT = REPO`：桩模块是运行时造的，
+    # `ModuleType` 上本来就没有 `ROOT` 属性，静态检查器会拒绝直接赋值；
+    # 而 `setattr(boot, "ROOT", ...)` 会被 ruff 的 B010 拦下。两者运行时等价。
+    boot.__dict__["ROOT"] = REPO
     monkeypatch.setitem(sys.modules, "_bootstrap", boot)
 
     path = REPO / "tools" / "run_downstream.py"
     spec = importlib.util.spec_from_file_location("_rd_under_test", path)
+    # 这两条不变量本来就必须成立（否则下一行会 AttributeError）；
+    # 显式断言只是把"不可能发生"变成静态可验证的。
+    assert spec is not None
+    assert spec.loader is not None
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     return mod

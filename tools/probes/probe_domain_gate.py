@@ -105,9 +105,12 @@ def solve_waf(challenge_html: str, proxy: str) -> str:
        —— 这里只做转发。两个拷贝的下场是漂移：探针能解、生产不能解，
        而且各自的“实测结论”会开始不一致。
     """
+    from src import config
+    from src.browser.settings import BrowserSettings
     from src.browser.waf import solve_acw_challenge
 
-    acw = solve_acw_challenge(challenge_html, proxy)
+    acw = solve_acw_challenge(challenge_html, proxy,
+                              settings=BrowserSettings.from_config(config))
     if acw:
         print(f"      ✓ 拿到 acw_sc__v2（len={len(acw)}）")
     return acw

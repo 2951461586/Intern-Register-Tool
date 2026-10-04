@@ -39,9 +39,28 @@ import src.browser.session as browser_session
 from src.browser import CHROME_ARGS, LoginResult, build_login_url
 from src.browser.attempt import _build_result
 from src.browser.session import BrowserSession, _launch_kwargs, _retry_loop
+from src.browser.settings import BrowserSettings
 from src.browser.state import _AttemptState
 
 _ROOT = Path(__file__).resolve().parents[1]
+
+
+@pytest.fixture
+def settings():
+    """注入面的**假**配置 —— 字面量，不读 `src.config`。
+
+    ⚠ 刻意不写 `BrowserSettings.from_config(config)`：本文件的宗旨是
+      "零浏览器、零网络、零外部状态"，而 `config` 在 import 时会去读 `.env`
+      与 `os.environ`（还会把值写进环境）。字面量把测试与真实配置彻底切开，
+      所以"URL 确实来自注入值"这件事才验得干净。
+    """
+    return BrowserSettings(
+        chrome_path="/fake/chrome",
+        sso_base="https://sso.example.test",
+        discovery_base="https://discovery.example.test",
+        client_id="cid-test",
+        source="src-test",
+    )
 
 
 @pytest.fixture(autouse=True)
@@ -382,41 +401,64 @@ def test_retry_loop_hint_appears_in_log(capsys, _no_real_sleep):
 # ────────────────────────────────────────────────────────────────
 # [4] Chrome 启动参数的注入面
 # ────────────────────────────────────────────────────────────────
-def test_launch_kwargs_defaults_to_module_constant():
-    kw = _launch_kwargs(headless=True, chrome_args=None)
+def test_launch_kwargs_defaults_to_module_constant(settings):
+    kw = _launch_kwargs(headless=True, chrome_args=None,
+                        executable_path=settings.chrome_path)
     assert kw["args"] is CHROME_ARGS
     assert kw["headless"] is True
-    assert kw["executable_path"]
+    assert kw["executable_path"] == "/fake/chrome"
 
 
-def test_launch_kwargs_uses_injected_args():
-    kw = _launch_kwargs(headless=False, chrome_args=["--x"])
+def test_launch_kwargs_uses_injected_args(settings):
+    kw = _launch_kwargs(headless=False, chrome_args=["--x"],
+                        executable_path=settings.chrome_path)
     assert kw["args"] == ["--x"]
 
 
-def test_launch_kwargs_copies_injected_list():
+def test_launch_kwargs_copies_injected_list(settings):
     """注入的 list 被复制 —— 调用方事后改自己的 list 不该影响已建的参数。"""
     mine = ["--x"]
-    kw = _launch_kwargs(headless=False, chrome_args=mine)
+    kw = _launch_kwargs(headless=False, chrome_args=mine,
+                        executable_path=settings.chrome_path)
     mine.append("--y")
     assert kw["args"] == ["--x"]
 
 
-def test_empty_injection_is_respected_not_treated_as_absent():
+def test_empty_injection_is_respected_not_treated_as_absent(settings):
     """`chrome_args=[]` 是"不要任何参数"，不能被当成"没传"。"""
-    kw = _launch_kwargs(headless=False, chrome_args=[])
+    kw = _launch_kwargs(headless=False, chrome_args=[],
+                        executable_path=settings.chrome_path)
     assert kw["args"] == []
 
 
-def test_session_keeps_injected_chrome_args():
-    sess = BrowserSession(headless=True, chrome_args=["--z"])
+def test_executable_path_is_mandatory():
+    """🔴 阶段 A 起 `executable_path` 是**必填** keyword-only。
+
+    它以前从 `config.CHROME_PATH` 读 —— 那正是 `src/browser/` 指向父包的
+    回边之一（见 `src/browser/settings.py`）。做成必填而不是默认 `None`：
+    忘记注入要在**调用点**就 `TypeError`，而不是拿着空路径去启动浏览器、
+    在很远的地方报一个看不出真因的错。
+    """
+    with pytest.raises(TypeError):
+        # 这里“少传参数”是**被测行为本身**，不是笔误。
+        _launch_kwargs(headless=True, chrome_args=None)  # type: ignore[call-arg]
+
+
+def test_session_requires_settings():
+    """同上：`BrowserSession` 的 `settings` 必填，漏传当场 TypeError。"""
+    with pytest.raises(TypeError):
+        BrowserSession(headless=True)  # type: ignore[call-arg]
+
+
+def test_session_keeps_injected_chrome_args(settings):
+    sess = BrowserSession(headless=True, chrome_args=["--z"], settings=settings)
     assert sess.chrome_args == ["--z"]
     assert sess.headless is True
     assert sess.launch_ms == 0
 
 
-def test_session_defaults_to_none_meaning_module_constant():
-    assert BrowserSession().chrome_args is None
+def test_session_defaults_to_none_meaning_module_constant(settings):
+    assert BrowserSession(settings=settings).chrome_args is None
 
 
 # ────────────────────────────────────────────────────────────────
@@ -433,8 +475,8 @@ def test_login_defaults_to_headless():
     assert inspect.signature(browser_entry.login).parameters["headless"].default is True
 
 
-def test_browser_session_defaults_to_headless():
-    assert BrowserSession().headless is True
+def test_browser_session_defaults_to_headless(settings):
+    assert BrowserSession(settings=settings).headless is True
 
 
 def test_pipeline_defaults_to_headless():
@@ -480,7 +522,7 @@ def test_cli_defaults_to_headless_with_headful_optout(cli):
     )
 
 
-def test_default_chrome_args_come_from_the_reader_module(monkeypatch):
+def test_default_chrome_args_come_from_the_reader_module(monkeypatch, settings):
     """🔴 `_launch_kwargs` 的默认值从**它所在模块**的命名空间读，不是从包里读。
 
     拆包后同一个常量有**三处可见**：
@@ -503,11 +545,12 @@ def test_default_chrome_args_come_from_the_reader_module(monkeypatch):
     assert browser_session.CHROME_ARGS is CHROME_ARGS
 
     monkeypatch.setattr(browser_session, "CHROME_ARGS", ["--patched"])
-    kw = _launch_kwargs(headless=True, chrome_args=None)
+    kw = _launch_kwargs(headless=True, chrome_args=None,
+                        executable_path=settings.chrome_path)
     assert kw["args"] == ["--patched"]
 
 
-def test_patching_the_package_attribute_does_not_reach_launch_kwargs(monkeypatch):
+def test_patching_the_package_attribute_does_not_reach_launch_kwargs(monkeypatch, settings):
     """🔴 **反向**守卫：把"patch 包级属性会静默失效"这个坑钉死。
 
     这是拆分**新引入**的陷阱（对应 skill `python-compat-shell-refactor` §D1/D2）：
@@ -524,7 +567,8 @@ def test_patching_the_package_attribute_does_not_reach_launch_kwargs(monkeypatch
     import src.browser as pkg
 
     monkeypatch.setattr(pkg, "CHROME_ARGS", ["--should-not-arrive"])
-    kw = _launch_kwargs(headless=True, chrome_args=None)
+    kw = _launch_kwargs(headless=True, chrome_args=None,
+                        executable_path=settings.chrome_path)
     assert kw["args"] != ["--should-not-arrive"]
     assert kw["args"] is browser_session.CHROME_ARGS
 
@@ -532,8 +576,29 @@ def test_patching_the_package_attribute_does_not_reach_launch_kwargs(monkeypatch
 # ────────────────────────────────────────────────────────────────
 # [5] 纯函数
 # ────────────────────────────────────────────────────────────────
-def test_build_login_url_shape():
-    url = build_login_url()
+def test_build_login_url_shape(settings):
+    url = build_login_url(settings)
     assert "/login?redirect=" in url
     assert "token-plan/home" in url
     assert "clientId=" in url and "source=" in url
+
+
+def test_build_login_url_reflects_injected_settings():
+    """🔴 URL 必须反映**注入的**值 —— 这是阶段 A 去掉回边后要保住的性质。
+
+    以前这四个值从 `config` 读（模块全局），`build_login_url()` 无参；
+    现在无参**直接不可能**（少一个参数 `TypeError`）。这条用例进一步证明
+    它用的是传进来的那一份，而不是某个隐藏的全局。
+    """
+    s = BrowserSettings(
+        chrome_path="x",
+        sso_base="https://sso.injected.test",
+        discovery_base="https://disc.injected.test",
+        client_id="CID-INJ",
+        source="SRC-INJ",
+    )
+    url = build_login_url(s)
+    assert url.startswith("https://sso.injected.test/login?redirect=")
+    assert "https://disc.injected.test/token-plan/home" in url
+    assert "clientId=CID-INJ" in url
+    assert "source=SRC-INJ" in url

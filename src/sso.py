@@ -29,6 +29,7 @@
 import random
 import time
 from dataclasses import dataclass
+from functools import partial
 
 import requests
 
@@ -118,12 +119,21 @@ class SSOClient:
 
         🔴 `from .browser.waf import …` 必须在**函数体内**：模块级 import 会把
            playwright 拖进测试链（`tests/test_dependency_surface.py` 会当场红）。
+
+        🔴 阶段 A 起用 `functools.partial` 把 `settings` **提前绑好**，
+           于是"解盾器可注入"这个接口保持 `(challenge_html, proxy) -> str`
+           不变 —— `tests/test_sso_waf.py` 注入的假解盾器就是两参签名，
+           而 `src/browser/waf.py` 本身已经不认识 `config`（见 settings.py）。
+           **不要**改成在调用点传 `settings=`：那会把注入契约从两参变成三参，
+           所有假解盾器都得跟着改，而它们和配置毫无关系。
         """
         solver = self._waf_solver
         if solver is None:
+            from .browser.settings import BrowserSettings
             from .browser.waf import solve_acw_challenge
 
-            solver = solve_acw_challenge
+            solver = partial(solve_acw_challenge,
+                             settings=BrowserSettings.from_config(config))
         return solver(challenge_html, self.proxy or config.IR_PROXY or "")
 
     def _pass_waf(

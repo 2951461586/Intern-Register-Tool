@@ -124,9 +124,12 @@ def run_one(d: dict, *, headless: bool, create: bool, key_name: str,
     # ── Stage 3：登录 ─────────────────────────────────────────
     t = time.time()
     try:
+        from src import config
         from src.browser import BrowserSession
+        from src.browser.settings import BrowserSettings
 
-        with BrowserSession(headless=headless) as sess:
+        with BrowserSession(headless=headless,
+                            settings=BrowserSettings.from_config(config)) as sess:
             res = sess.login(rec.email, rec.password, verbose=False)
             timings["browser_launch"] = sess.launch_ms
             if not res.ok:
@@ -343,7 +346,11 @@ def main() -> int:
     print("=" * 72)
 
     lock = threading.Lock()
-    results: list[dict] = [None] * n
+    # ⚠ 占位符用 `{}` 而不是 `None`：`results` 声明为 `list[dict]`，而 `[None] * n`
+    #    与声明相矛盾；且一旦有槽位没被 work() 赋上值，`None` 会在下面
+    #    `r.get(...)` 处当场 AttributeError。`{}` 与 `None` **同为假值**，
+    #    第 373 行的 `if r` 一样把它们滤掉 —— 行为完全一致，但不会崩。
+    results: list[dict] = [{} for _ in range(n)]
 
     def work(i: int, d: dict) -> None:
         tag = f"[{i + 1}/{n}] {d.get('email', '?')[:34]}"
@@ -389,7 +396,7 @@ def main() -> int:
           + (f"（{pending} 个新建 key 传播未到位）" if pending else ""))
 
     # ── 额度分布：上一轮发现过非 10 的取值，这里必须显式列出来 ──
-    creds = [r.get("credits") for r in results if r.get("credits")]
+    creds = [c for r in results if (c := r.get("credits"))]
     if creds:
         uniq = sorted(set(creds))
         print(f"\n  credits 分布：{uniq}")

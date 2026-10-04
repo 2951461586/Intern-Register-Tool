@@ -27,6 +27,7 @@ from _path import ROOT  # noqa: F401  （副作用：把 tools/ 与仓库根加�
 
 from src import config  # noqa: E402
 from src.browser import CHROME_ARGS, build_login_url  # noqa: E402
+from src.browser.settings import BrowserSettings  # noqa: E402
 
 OUT = Path(__file__).with_name("login_route.json")
 
@@ -42,7 +43,7 @@ def main():
                                   viewport=None)
         page = ctx.new_page()
 
-        url = build_login_url()
+        url = build_login_url(BrowserSettings.from_config(config))
         report["entry_url"] = url
         t0 = time.time()
         page.goto(url, wait_until="domcontentloaded", timeout=60000)

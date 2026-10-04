@@ -6,6 +6,7 @@
 
 from .attempt import _run_attempt
 from .session import _launch_kwargs, _retry_loop
+from .settings import BrowserSettings
 from .state import LoginResult
 
 
@@ -14,8 +15,8 @@ from .state import LoginResult
 # ────────────────────────────────────────────────────────────────
 def login(account: str, password: str, *, headless: bool = True,
           timeout: int = 150, attempts: int = 3, cooldown: float = 15.0,
-          screenshot_prefix: str = None, verbose: bool = False,
-          chrome_args=None) -> LoginResult:
+          screenshot_prefix: str | None = None, verbose: bool = False,
+          chrome_args=None, settings: BrowserSettings) -> LoginResult:
     """用真实浏览器登录 SSO，返回 JWT。
 
     单账号场景用这个；批量场景请用 `BrowserSession` 复用浏览器进程。
@@ -33,6 +34,10 @@ def login(account: str, password: str, *, headless: bool = True,
         chrome_args: 自定义 Chrome 启动参数；`None` → 模块级 `CHROME_ARGS`。
             **要注入启动参数请用这个**，不要去改 `CHROME_ARGS` 全局
             （理由见 `_launch_kwargs()`）。
+        settings: 浏览器层的外部配置（Chrome 路径 / SSO 与 discovery 基础 URL /
+            clientId / source）。**阶段 A 起必填** —— 本包不再 `from .. import config`
+            （回边见 `settings.py`）。要现成的一份就
+            `BrowserSettings.from_config(config)`。
 
     Returns:
         LoginResult；`attempts_used` 记录实际用掉几次尝试，`timings` 是各阶段耗时(ms)。
@@ -41,10 +46,13 @@ def login(account: str, password: str, *, headless: bool = True,
 
     def run_once(tag):
         with sync_playwright() as p:
-            browser = p.chromium.launch(**_launch_kwargs(headless, chrome_args))
+            browser = p.chromium.launch(
+                **_launch_kwargs(headless, chrome_args,
+                                 executable_path=settings.chrome_path))
             try:
                 return _run_attempt(browser, account=account, password=password,
                                     headless=headless, timeout=timeout,
+                                    settings=settings,
                                     screenshot_prefix=screenshot_prefix,
                                     verbose=verbose, tag=tag)
             finally:

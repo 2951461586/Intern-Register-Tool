@@ -50,6 +50,7 @@ import sys
 import threading
 import time
 from pathlib import Path
+from typing import Any
 
 from _path import ROOT  # noqa: F401  （副作用：把 tools/ 与仓库根加进 sys.path）
 
@@ -104,7 +105,9 @@ def probe_discovery(jwt: str, cookies: dict) -> dict:
                      ("list_keys", dc.list_keys)):
         t = time.time()
         try:
-            v = fn()
+            # `fn` 是异质的调用表（dict / list 两种返回），`Any` 是**诚实的**
+            # 类型：真实类型取决于 `name`，下面两个分支各自才知道。
+            v: Any = fn()
             if name == "balance":
                 out[name] = {"ok": True, "ms": round((time.time() - t) * 1000),
                              "credits": str(v.get("available_credits", ""))}
@@ -170,7 +173,11 @@ def main() -> int:
     for e, _ in accts:
         print(f"  - {e}")
 
+    from src import config
     from src.browser import BrowserSession
+    from src.browser.settings import BrowserSettings
+
+    bs = BrowserSettings.from_config(config)
 
     q: queue.Queue = queue.Queue()
     for a in accts:
@@ -179,7 +186,7 @@ def main() -> int:
 
     def worker(wid: int):
         try:
-            with BrowserSession(headless=args.headless) as sess:
+            with BrowserSession(headless=args.headless, settings=bs) as sess:
                 print(f"[worker {wid + 1}] browser ready ({sess.launch_ms}ms)",
                       flush=True)
                 while True:

@@ -3,21 +3,25 @@
 - `_launch_kwargs()` 是阶段 A 引入的**注入面** —— `chrome_args` 为 `None` 时
   用 `constants.CHROME_ARGS`，否则用传入值。这让探针不必再改写模块全局。
 - `_retry_loop()` 消掉了 `login()` 与 `BrowserSession.login()` 约 20 行重复。
+
+🔴 2026-10-04（阶段 A）：`executable_path`（= `config.CHROME_PATH`）改为
+  显式参数、`BrowserSession` 改为接收 `settings: BrowserSettings` ——
+  本模块不再 `from .. import config`（回边见 `settings.py`）。
 """
 
 import random
 import time
 
-from .. import config
 from .attempt import _run_attempt
 from .constants import CHROME_ARGS
+from .settings import BrowserSettings
 from .state import LoginResult
 
 
 # ────────────────────────────────────────────────────────────────
 # 启动参数与重试循环（两个入口共用）
 # ────────────────────────────────────────────────────────────────
-def _launch_kwargs(headless: bool, chrome_args=None) -> dict:
+def _launch_kwargs(headless: bool, chrome_args=None, *, executable_path: str) -> dict:
     """组装 `chromium.launch()` 的参数。
 
     🔴 `chrome_args` 必须是**显式参数**，不能只靠调用方去改模块级 `CHROME_ARGS`。
@@ -30,9 +34,14 @@ def _launch_kwargs(headless: bool, chrome_args=None) -> dict:
 
     改成参数后，注入面不再依赖模块内部布局。`None` → 用模块级 `CHROME_ARGS`，
     所以旧调用方零改动。
+
+    🔴 `executable_path` 是**必填**的 keyword-only：它就是
+      `config.CHROME_PATH`，本来从 `config` 读，是那条回边的一部分。
+      做成必填而不是默认 `None`，是为了让"忘记注入"在**调用点**就报 TypeError，
+      而不是拿着一个空路径去启动浏览器、在很远的地方抛一个看不出真因的错。
     """
     return dict(
-        executable_path=config.CHROME_PATH,
+        executable_path=executable_path,
         headless=headless,
         args=CHROME_ARGS if chrome_args is None else list(chrome_args),
     )
@@ -94,11 +103,17 @@ class BrowserSession:
 
     `chrome_args`：自定义 Chrome 启动参数，`None` → 模块级 `CHROME_ARGS`。
     理由见 `_launch_kwargs()` —— **探针要注入启动参数请用它，别改全局**。
+
+    🔴 `settings` 是**必填**的 keyword-only（阶段 A 起）：一个账号都不要的
+      浏览器启动路径也是从它读的。要现成的一份就
+      `BrowserSettings.from_config(config)`，见 `settings.py`。
     """
 
-    def __init__(self, headless: bool = True, chrome_args=None):
+    def __init__(self, headless: bool = True, chrome_args=None, *,
+                 settings: BrowserSettings):
         self.headless = headless
         self.chrome_args = chrome_args
+        self.settings = settings
         self._pw = None
         self._browser = None
         self.launch_ms = 0
@@ -109,11 +124,15 @@ class BrowserSession:
         t0 = time.time()
         self._pw = sync_playwright().start()
         self._browser = self._pw.chromium.launch(
-            **_launch_kwargs(self.headless, self.chrome_args))
+            **_launch_kwargs(self.headless, self.chrome_args,
+                             executable_path=self.settings.chrome_path))
         self.launch_ms = round((time.time() - t0) * 1000)
         return self
 
-    def __exit__(self, *exc):
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        # 显式写三个参数而不是 `*exc`：两者语义等价（本方法不读这三个值、
+        # 返回 False 让异常继续传播），但 pi-lens 的 `no-dunder-exit-wrong-arity`
+        # 规则会把 `*exc` 当成"只有一个额外参数"从而误报。
         try:
             if self._browser:
                 self._browser.close()
@@ -124,11 +143,12 @@ class BrowserSession:
 
     def login(self, account: str, password: str, *, timeout: int = 150,
               attempts: int = 3, cooldown: float = 15.0,
-              screenshot_prefix: str = None, verbose: bool = False) -> LoginResult:
+              screenshot_prefix: str | None = None, verbose: bool = False) -> LoginResult:
         """在复用的浏览器上登录，失败换新 context 重试。"""
         def run_once(tag):
             return _run_attempt(self._browser, account=account, password=password,
                                 headless=self.headless, timeout=timeout,
+                                settings=self.settings,
                                 screenshot_prefix=screenshot_prefix,
                                 verbose=verbose, tag=tag)
 
