@@ -72,26 +72,35 @@ from src.pipeline import ERR_QUOTA, error_kind_of, run_batch  # noqa: E402
 def main():
     ap = argparse.ArgumentParser(description="OpenXLab 注册 + API Key 提取")
     ap.add_argument("--count", type=int, default=1, help="注册账号数量")
-    ap.add_argument("--workers", type=int, default=4,
-                    help="浏览器并发数（实测 6 路零失败，默认 4）")
+    ap.add_argument(
+        "--workers", type=int, default=4, help="浏览器并发数（实测 6 路零失败，默认 4）"
+    )
     ap.add_argument("--key-name", default="default", help="API Key 名称")
     ap.add_argument("--mail-domain", default=None, help="临时邮箱域名（默认取 IR_WORKER_DOMAIN）")
     # `--headless` / `--headful` 的接线与 `tools/run_downstream.py` 共用
     # （见 src/cli.py 的模块 docstring：那一对开关的 `dest` 手写容易漏，
     #  漏了会让 `--headful` 静默无效）。
     _cli.add_headless_args(ap)
-    ap.add_argument("--out", default=None,
-                    help="结果输出文件。**不填（默认）= 写进台账目录**："
-                         "ledger/runs/<日期>/results-<时间戳>.json（合并后的全量快照，"
-                         "也是台账读源）+ ledger/latest.json（本批结果）。"
-                         "显式给路径则只写那一个文件、不落快照。")
-    ap.add_argument("--overwrite", action="store_true",
-                    help="只写本次结果、不合并历史（默认按 email 合并，"
-                         "防止一次小规模探测覆盖掉整个账号台账）")
+    ap.add_argument(
+        "--out",
+        default=None,
+        help="结果输出文件。**不填（默认）= 写进台账目录**："
+        "ledger/runs/<日期>/results-<时间戳>.json（合并后的全量快照，"
+        "也是台账读源）+ ledger/latest.json（本批结果）。"
+        "显式给路径则只写那一个文件、不落快照。",
+    )
+    ap.add_argument(
+        "--overwrite",
+        action="store_true",
+        help="只写本次结果、不合并历史（默认按 email 合并，防止一次小规模探测覆盖掉整个账号台账）",
+    )
     ap.add_argument("--shot", default=None, help="保存过程截图的前缀")
     ap.add_argument("--quiet", action="store_true", help="只输出汇总")
-    ap.add_argument("--ignore-quota", action="store_true",
-                    help="跳过本地配额保护（仅当确信服务端配额已恢复时用）")
+    ap.add_argument(
+        "--ignore-quota",
+        action="store_true",
+        help="跳过本地配额保护（仅当确信服务端配额已恢复时用）",
+    )
     args = ap.parse_args()
 
     # 启动校验：缺凭据就立刻失败，别等跑了一半才发现全是 401。
@@ -101,19 +110,30 @@ def main():
     missing = config.validate()
     if missing:
         print(f"✗ 缺少必需配置：{'、'.join(missing)}", file=sys.stderr)
-        print("  修法：cp .env.example .env 并填入真实值"
-              "（.env 已在 .gitignore 中，不会进仓库）", file=sys.stderr)
+        print(
+            "  修法：cp .env.example .env 并填入真实值（.env 已在 .gitignore 中，不会进仓库）",
+            file=sys.stderr,
+        )
         return 1
 
     # 本地累计计数（跨运行）。这不是权威计量，但能在撞墙前把人拦住。
     slots = config.proxy_slots()
-    qs = quota.status()
+    # 🔴 必须带 `scope=""`（**单代理**那个出口），不能用无参的 `status()`：
+    #    无参 = 统计**全部** scope。槽位模式下它就是"几个出口加起来"，与
+    #    "我还能在单代理出口上注册几个"不是一回事。2026-10-04 实测：混合模式
+    #    跑过之后无参得到 42/40（假性触顶），而 `scope=""` 是 **0/40** ——
+    #    照无参判断会以退出码 2 结束、**一个请求都不发**，并让人白等 22 小时。
+    #    顺带这也让下面那句"那是**老出口**的"变成真话（无参并不是老出口）。
+    qs = quota.status(scope="")
     if slots:
         # 🔀 槽位模式下全局数字**没有参考价值** —— 它是池化之前那个出口的
         #    计数，而真正拦人的是每个出口 IP 各自的计数。所以这里必须
         #    按出口逐个打印，否则人会照着一个假的数字判断"还能跑多少"。
-        print(f"🔀 槽位池：{len(slots)} 个槽位已配置"
-              f"（{config.IR_PROXY_SLOTS_FILE or 'IR_PROXY_SLOTS'}）", flush=True)
+        print(
+            f"🔀 槽位池：{len(slots)} 个槽位已配置"
+            f"（{config.IR_PROXY_SLOTS_FILE or 'IR_PROXY_SLOTS'}）",
+            flush=True,
+        )
         total_left = 0
         try:
             for i, url in enumerate(slots, 1):
@@ -127,14 +147,19 @@ def main():
                 #    ⚠ 出口 IP 是**故意**打印的 —— 这张表的用途就是按出口看额度；
                 #    但正因如此，**这段输出不要粘进任何仓库 / issue**（见
                 #    docs/security-conventions.md「终端输出」一节）。
-                print(f"     slot{i} {redact.redact_url(url):<26} 出口 {ip:<16} "
-                      f"{st.used:>2}/{config.REG_QUOTA_MAX}  {mark}", flush=True)
+                print(
+                    f"     slot{i} {redact.redact_url(url):<26} 出口 {ip:<16} "
+                    f"{st.used:>2}/{config.REG_QUOTA_MAX}  {mark}",
+                    flush=True,
+                )
         except ValueError as ex:
             print(f"\n✗ 槽位出口 IP 未登记，拒绝开跑：\n  {ex}", file=sys.stderr)
             return 1
-        print(f"   ── 合计可用额度 {total_left} 个"
-              f"（全局计数 {qs.describe()} —— 那是**老出口**的，别拿它判断）",
-              flush=True)
+        print(
+            f"   ── 合计可用额度 {total_left} 个"
+            f"（全局计数 {qs.describe()} —— 那是**老出口**的，别拿它判断）",
+            flush=True,
+        )
         # 🔴 提示行由 `quota.shortfall_hint()` 统一生成 —— 那里要读
         #    `--ignore-quota`，否则开关打开时会打出"这一批会全部被跳过"
         #    这种**假话**（2026-09-20 实测：47/50 成功，提示却说全跳）。
@@ -145,13 +170,14 @@ def main():
         if hint:
             print(hint, flush=True)
     else:
-        print(f"本地配额：{qs.describe()}  "
-              f"[state: {quota.state_path()}]", flush=True)
+        print(f"本地配额：{qs.describe()}  [state: {quota.state_path()}]", flush=True)
     if qs.exhausted and not args.ignore_quota and not slots:
-        print("  ⚠ 窗口内计数已达上限。这是**保守估计** —— 服务端恢复时间未知，"
-              "本地窗口取的是偏保守值。\n"
-              "    若确信服务端已恢复，可加 --ignore-quota 或调大 IR_REG_QUOTA_MAX。",
-              flush=True)
+        print(
+            "  ⚠ 窗口内计数已达上限。这是**保守估计** —— 服务端恢复时间未知，"
+            "本地窗口取的是偏保守值。\n"
+            "    若确信服务端已恢复，可加 --ignore-quota 或调大 IR_REG_QUOTA_MAX。",
+            flush=True,
+        )
 
     t0 = time.time()
     try:
@@ -167,10 +193,12 @@ def main():
         )
     except quota.QuotaExceeded as ex:
         print(f"\n✗ {ex}", file=sys.stderr)
-        print("  这是**本地保护**（src/quota.py），不是服务端拒绝 —— 未发出任何请求。\n"
-              "  选项：① 等窗口滑出（见上面的分钟数）；② 调大 IR_REG_QUOTA_MAX；\n"
-              "        ③ 先确认服务端确实已恢复，再加 --ignore-quota。",
-              file=sys.stderr)
+        print(
+            "  这是**本地保护**（src/quota.py），不是服务端拒绝 —— 未发出任何请求。\n"
+            "  选项：① 等窗口滑出（见上面的分钟数）；② 调大 IR_REG_QUOTA_MAX；\n"
+            "        ③ 先确认服务端确实已恢复，再加 --ignore-quota。",
+            file=sys.stderr,
+        )
         return 2
     except proxypool.AllSlotsDead as ex:
         # 🔴 槽位端口预检失败。这里**刻意给一个干净的报错**而不是让它抛 traceback：
@@ -190,7 +218,15 @@ def main():
     # 挤在同一个文件里，仓库根堆了一串手写 `.bak-batchXX-*` 备份，
     # 复盘时得靠时间戳猜哪个是哪个。
     out = Path(args.out) if args.out else None
-    new_records = [json.loads(r.to_json()) for r in results]
+    # ⚠ 这里的 `json.loads` 只可能在**我们自己的** `AccountRecord.to_json()`
+    #    出问题时抛 —— 那是内部不变量被破坏。**绝不静默丢记录**（少数据但指标
+    #    全"正常"是最坏的失败，见 `src/ledger.py` 的防静默缩水护栏），但要把
+    #    肇事者说清楚：裸的 `JSONDecodeError` 看不出是哪条记录、哪个字段。
+    try:
+        new_records = [json.loads(r.to_json()) for r in results]
+    except json.JSONDecodeError as ex:
+        print(f"✗ 内部错误：AccountRecord.to_json() 产出了非法 JSON：{ex}", file=sys.stderr)
+        return 5
     if args.overwrite:
         merged = new_records
         print(f"\n（--overwrite：只写本次 {len(merged)} 条，不合并历史）")
@@ -218,15 +254,17 @@ def main():
             # `new_records` 是**本批原始**结果（含失败 / 跳过）→ latest.json；
             # `merged` 是合并后的**全量** → 快照（也是新的读源）。
             snap, last = _ledger.save_snapshot(
-                merged, new_records, existing=[] if args.overwrite else None)
+                merged, new_records, existing=[] if args.overwrite else None
+            )
             written = snap
-            print(f"\n台账已落盘：\n"
-                  f"  快照（读源） {snap.relative_to(_ledger.ROOT)}\n"
-                  f"  本批结果     {last.relative_to(_ledger.ROOT)}"
-                  f"（{len(new_records)} 条）")
+            print(
+                f"\n台账已落盘：\n"
+                f"  快照（读源） {snap.relative_to(_ledger.ROOT)}\n"
+                f"  本批结果     {last.relative_to(_ledger.ROOT)}"
+                f"（{len(new_records)} 条）"
+            )
         else:
-            written = _ledger.save(
-                out, merged, existing=[] if args.overwrite else None)
+            written = _ledger.save(out, merged, existing=[] if args.overwrite else None)
     except ValueError as ex:
         # 防静默缩水护栏（src/ledger）。少数据但指标全"正常"是最坏的失败，
         # 宁可报错退出也不要静默丢掉账号。
@@ -240,10 +278,26 @@ def main():
     #   ② 这 ~180 行是纯展示逻辑，混在 CLI 入口里把真正的流程控制淹没了。
     # `error_kind_of` / `ERR_QUOTA` / `config` / `quota` 都是**注入**进去的，
     # 报告层因此只依赖 stdlib，不会把 `requests` 那条链带进测试。
+    # 收尾那行的配额摘要**由这里渲染**（`report.py` 有意不知道"槽位"这个概念，
+    # 只依赖注入对象，见它的 docstring）：槽位模式下 `quota.status()` 无参是
+    # "各出口之和"，而它的 limit 是**单出口**上限 —— 直接印会假性说
+    # "配额已用尽、N 分钟后可再注册"。
+    quota_line = (
+        quota.slots_summary(slots, scope_of=config.slot_scope)
+        if slots
+        else quota.status(scope="").describe()
+    )
     _report.render_batch_report(
-        results, written, wall,
-        workers=args.workers, quota=quota, config=config,
-        error_kind_of=error_kind_of, err_quota=ERR_QUOTA)
+        results,
+        written,
+        wall,
+        workers=args.workers,
+        quota=quota,
+        config=config,
+        error_kind_of=error_kind_of,
+        err_quota=ERR_QUOTA,
+        quota_line=quota_line,
+    )
 
 
 if __name__ == "__main__":

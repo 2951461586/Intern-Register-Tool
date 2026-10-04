@@ -74,16 +74,16 @@ def test_01_to_04_baseline_accumulate_and_exhaust(env):
     assert len(state.read_text(encoding="utf-8").splitlines()) == 3
 
     # ── 3. check_or_raise 两种语义（此刻 used=3, limit=5）──────
-    quota.check_or_raise(planned=2)          # 3+2 == 5，不超
+    quota.check_or_raise(planned=2)  # 3+2 == 5，不超
     with pytest.raises(quota.QuotaExceeded):
-        quota.check_or_raise(planned=3)      # 3+3 > 5，严格档该抛
+        quota.check_or_raise(planned=3)  # 3+3 > 5，严格档该抛
 
     st2 = quota.check_or_raise(planned=3, allow_partial=True)
     assert st2.remaining == 2, f"remaining={st2.remaining}"
 
     # ── 4. 触顶 ───────────────────────────────────────────────
     quota.record("u3@x.com")
-    st = quota.record("u4@x.com")            # 第 5 个 → 触顶
+    st = quota.record("u4@x.com")  # 第 5 个 → 触顶
     assert st.exhausted, f"used={st.used}"
     assert st.remaining == 0
     assert st.wait_seconds() > 0, f"{st.wait_seconds() / 60:.1f} 分钟"
@@ -106,8 +106,7 @@ def test_04b_overshoot_wait_uses_nth_record(env):
     # 7 条记录，第 i 条（从 0 数）距过期还有 100*(i+1) 秒
     lines = []
     for i in range(7):
-        lines.append(json.dumps({"ts": now - W + 100.0 * (i + 1),
-                                 "email": f"over{i}@x.com"}))
+        lines.append(json.dumps({"ts": now - W + 100.0 * (i + 1), "email": f"over{i}@x.com"}))
     state.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
     st = quota.status()
@@ -115,9 +114,8 @@ def test_04b_overshoot_wait_uses_nth_record(env):
     assert st.exhausted
     assert st.must_expire == 3, f"must_expire={st.must_expire}"
     w = st.wait_seconds()
-    assert 290 < w < 310, f"{w:.1f}s"          # 第 3 条滑出，不是第 1 条的 100s
-    assert "超额 2 条" in st.describe() and "需滑出 3 条" in st.describe(), \
-        st.describe()
+    assert 290 < w < 310, f"{w:.1f}s"  # 第 3 条滑出，不是第 1 条的 100s
+    assert "超额 2 条" in st.describe() and "需滑出 3 条" in st.describe(), st.describe()
 
     # 刚好等于 limit 时，只需滑出 1 条
     state.write_text("\n".join(lines[:5]) + "\n", encoding="utf-8")
@@ -143,7 +141,7 @@ def test_05_to_06_concurrent_append_then_bad_lines(env):
     barrier = threading.Barrier(n_threads)
 
     def hammer(tid: int):
-        barrier.wait()                        # 尽量让写操作撞在一起
+        barrier.wait()  # 尽量让写操作撞在一起
         for j in range(per):
             quota.record(f"t{tid}-{j}@x.com")
 
@@ -155,25 +153,26 @@ def test_05_to_06_concurrent_append_then_bad_lines(env):
 
     lines = [ln for ln in state.read_text(encoding="utf-8").splitlines() if ln.strip()]
     expect = n_threads * per
-    assert len(lines) == expect, \
+    assert len(lines) == expect, (
         f"丢了 {expect - len(lines)} 行" if len(lines) != expect else "零丢失"
+    )
     assert quota.status().used == expect, f"used={quota.status().used}"
 
     # ── 6. 半截行被跳过 ───────────────────────────────────────
     with state.open("a", encoding="utf-8") as f:
         f.write('{"ts": 1.0, "email": "half')  # 故意写半截
         f.write("\n")
-        f.write("\n")                          # 空行
-        f.write('not json at all\n')
+        f.write("\n")  # 空行
+        f.write("not json at all\n")
     st = quota.status()
     assert st.used == expect, f"used={st.used}"
-    assert st.used == expect                   # 坏行不被计入
+    assert st.used == expect  # 坏行不被计入
 
 
 # ── [7] 窗口外的旧记录不计入 ──────────────────────────────────────────
 def test_07_out_of_window_records_excluded(env):
     state = env
-    old_ts = time.time() - 7 * 3600            # 7h 前 > 6h 窗口
+    old_ts = time.time() - 7 * 3600  # 7h 前 > 6h 窗口
     with state.open("w", encoding="utf-8") as f:
         for i in range(10):
             f.write(json.dumps({"ts": old_ts, "email": f"old{i}@x.com"}) + "\n")
@@ -182,7 +181,7 @@ def test_07_out_of_window_records_excluded(env):
     st = quota.status()
     assert st.used == 1, f"used={st.used}"
     assert st.oldest_ts is not None and st.oldest_ts > time.time() - 60
-    assert not st.exhausted                    # 旧记录不占额度
+    assert not st.exhausted  # 旧记录不占额度
 
 
 # ── [8] _compact_if_needed 重写文件 ───────────────────────────────────
@@ -190,10 +189,10 @@ def test_08_compact_rewrites_file(env):
     state = env
     old_ts = time.time() - 7 * 3600
     with state.open("w", encoding="utf-8") as f:
-        for i in range(300):                   # 全部是窗口外的死记录
+        for i in range(300):  # 全部是窗口外的死记录
             f.write(json.dumps({"ts": old_ts, "email": f"dead{i}@x.com"}) + "\n")
     before = len(state.read_text(encoding="utf-8").splitlines())
-    quota.record("fresh@x.com")                # 触发 compact
+    quota.record("fresh@x.com")  # 触发 compact
     after = len(state.read_text(encoding="utf-8").splitlines())
     assert after <= 2, f"before={before} after={after}"
     assert quota.status().used == 1, f"used={quota.status().used}"
@@ -202,8 +201,7 @@ def test_08_compact_rewrites_file(env):
 # ── [9] state 不可写时 record 不抛异常 ────────────────────────────────
 def test_09_oserror_does_not_crash(tmp_path, monkeypatch):
     """记不上不该拖垮主流程。"""
-    monkeypatch.setattr(quota, "state_path",
-                        lambda: tmp_path / "no" / "such" / "dir" / "x.jsonl")
+    monkeypatch.setattr(quota, "state_path", lambda: tmp_path / "no" / "such" / "dir" / "x.jsonl")
     # 这里目录能被 mkdir 创建，所以不该崩；关键是**不能抛**
     quota.record("x@x.com")
 
@@ -220,30 +218,46 @@ def test_10_backfill_history(env, tmp_path):
     now = time.time()
 
     def ca(hours_ago: float) -> str:
-        return time.strftime("%Y-%m-%d %H:%M:%S",
-                             time.localtime(now - hours_ago * 3600))
+        return time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(now - hours_ago * 3600))
 
     hist = [
-        {"email": "a@x.com", "created_at": ca(1), "status": "success",
-         "stages": {"register": "ok", "login": "ok", "key": "ok"}},
+        {
+            "email": "a@x.com",
+            "created_at": ca(1),
+            "status": "success",
+            "stages": {"register": "ok", "login": "ok", "key": "ok"},
+        },
         # 注册成功、登录失败 → 必须补录（占了注册配额）
-        {"email": "b@x.com", "created_at": ca(2), "status": "failed",
-         "stages": {"register": "ok"}, "error": "login: boom"},
+        {
+            "email": "b@x.com",
+            "created_at": ca(2),
+            "status": "failed",
+            "stages": {"register": "ok"},
+            "error": "login: boom",
+        },
         # 注册就失败 → 不该补录
-        {"email": "c@x.com", "created_at": ca(3), "status": "failed",
-         "stages": {}, "error": "register: boom"},
+        {
+            "email": "c@x.com",
+            "created_at": ca(3),
+            "status": "failed",
+            "stages": {},
+            "error": "register: boom",
+        },
         # 窗口外 → 要写入（读取时才按窗口过滤）
-        {"email": "d@x.com", "created_at": ca(9), "status": "success",
-         "stages": {"register": "ok", "login": "ok", "key": "ok"}},
+        {
+            "email": "d@x.com",
+            "created_at": ca(9),
+            "status": "success",
+            "stages": {"register": "ok", "login": "ok", "key": "ok"},
+        },
         # 缺 created_at → 不补录（宁可少记，也不给错时间戳）
-        {"email": "e@x.com", "status": "success",
-         "stages": {"register": "ok"}},
+        {"email": "e@x.com", "status": "success", "stages": {"register": "ok"}},
     ]
     hp = tmp_path / "results.json"
     hp.write_text(json.dumps(hist, ensure_ascii=False), encoding="utf-8")
 
     added, _dup = quota.backfill([str(hp)], dry_run=True)
-    assert added == 3, f"added={added}"        # a/b/d
+    assert added == 3, f"added={added}"  # a/b/d
     assert not state.exists(), "dry-run 不该落盘"
 
     added, _dup = quota.backfill([str(hp)])
@@ -257,9 +271,20 @@ def test_10_backfill_history(env, tmp_path):
     # zip 支持（历史备份就是 zip）
     zp = tmp_path / "hist.zip"
     with zipfile.ZipFile(zp, "w") as z:
-        z.writestr("tmp/f.json", json.dumps(
-            [{"email": "f@x.com", "created_at": ca(1), "status": "success",
-              "stages": {"register": "ok"}}], ensure_ascii=False))
+        z.writestr(
+            "tmp/f.json",
+            json.dumps(
+                [
+                    {
+                        "email": "f@x.com",
+                        "created_at": ca(1),
+                        "status": "success",
+                        "stages": {"register": "ok"},
+                    }
+                ],
+                ensure_ascii=False,
+            ),
+        )
         z.writestr("readme.txt", "not json")
     added, _dup = quota.backfill([str(zp)])
     assert added == 1, f"added={added}"
@@ -276,36 +301,100 @@ def test_11_scope_isolation(scope_env):
 
     # 11a. 无 scope 的历史记录属于"老出口"，不该被新槽位看到
     state2.write_text(
-        json.dumps({"ts": time.time(), "email": "old@x.com"}) + "\n"
-        + json.dumps({"ts": time.time(), "email": "old2@x.com"}) + "\n",
-        encoding="utf-8")
+        json.dumps({"ts": time.time(), "email": "old@x.com"})
+        + "\n"
+        + json.dumps({"ts": time.time(), "email": "old2@x.com"})
+        + "\n",
+        encoding="utf-8",
+    )
     assert quota.status().used == 2, f"used={quota.status().used}"
-    assert quota.status(scope="slot1").used == 0, \
-        f"used={quota.status(scope='slot1').used}"
+    assert quota.status(scope="slot1").used == 0, f"used={quota.status(scope='slot1').used}"
     assert quota.status(scope="").used == 2, f"used={quota.status(scope='').used}"
 
     # 11b. 各 scope 独立累加、互不影响
     quota.record("a@x.com", scope="slot1")
     quota.record("b@x.com", scope="slot2")
     quota.record("c@x.com", scope="slot2")
-    assert quota.status(scope="slot1").used == 1, \
-        f"used={quota.status(scope='slot1').used}"
-    assert quota.status(scope="slot2").used == 2, \
-        f"used={quota.status(scope='slot2').used}"
-    assert quota.status(scope="slot3").used == 0, \
-        f"used={quota.status(scope='slot3').used}"
+    assert quota.status(scope="slot1").used == 1, f"used={quota.status(scope='slot1').used}"
+    assert quota.status(scope="slot2").used == 2, f"used={quota.status(scope='slot2').used}"
+    assert quota.status(scope="slot3").used == 0, f"used={quota.status(scope='slot3').used}"
     assert quota.status().used == 5, f"used={quota.status().used}"  # 2 老 + 3 新
-    assert quota.record("d@x.com", scope="slot1").used == 2, \
-        "slot1 记第 2 条后应为 2"
+    assert quota.record("d@x.com", scope="slot1").used == 2, "slot1 记第 2 条后应为 2"
 
     # 11c. 一个出口触顶不影响别的出口 —— 这是整个 scope 机制的目的
-    assert quota.status(scope="slot1").exhausted            # 2/2
-    assert quota.status(scope="slot2").exhausted            # 2/2
-    assert not quota.status(scope="slot3").exhausted        # 0/2，不被拖累
+    assert quota.status(scope="slot1").exhausted  # 2/2
+    assert quota.status(scope="slot2").exhausted  # 2/2
+    assert not quota.status(scope="slot3").exhausted  # 0/2，不被拖累
 
     with pytest.raises(quota.QuotaExceeded):
         quota.check_or_raise(planned=1, scope="slot1")
-    quota.check_or_raise(planned=1, scope="slot3")          # 该出口还有余量，不抛
+    quota.check_or_raise(planned=1, scope="slot3")  # 该出口还有余量，不抛
 
     # 11d. 向后兼容：老文件里的行没有 scope 字段，解析不能崩
     assert quota.status(scope="").used == 2, f"used={quota.status(scope='').used}"
+
+
+# ── [12] 别的出口的计数**不能**拦住单代理那次运行 ──────────────────
+# 2026-10-04 实测踩到（接 BYO 池时）：连跑几批槽位模式后各出口分别记了
+# 12/9/8/7/3 条，而 `check_or_raise()` 当时**没传 scope** ⇒ `status()` 把
+# 5 个出口**加起来**（42）与**单个出口**的上限（40）比 ⇒ 抛 QuotaExceeded。
+# 而 `scope=""`（真正的单代理出口）是 **0/40**。
+#
+# 后果不是「显示不好看」：`run.py` 会以退出码 2 结束、**一个请求都不发**，
+# 并告诉人「1298.9 分钟后可再注册」—— 白等 22 小时。
+# 所以这条测的是**正确性**，不是文案。
+def test_12_other_egresses_do_not_block_the_single_proxy_scope(scope_env):
+    """🔴 合计触顶 ≠ 单代理出口触顶；传了 scope 就不该抛。"""
+    for ip in ("203.0.113.1", "203.0.113.2", "203.0.113.3"):
+        for _ in range(2):  # 三个出口各记满（limit=2）
+            quota.record("x@x.com", scope=ip)
+
+    # 合计 6 > limit 2 ⇒ **无 scope** 的判据会假性触顶（这就是那个陷阱）
+    assert quota.status().used == 6
+    assert quota.status().exhausted
+    # 单代理出口（scope=""）根本没被用过
+    assert quota.status(scope="").used == 0
+    assert not quota.status(scope="").exhausted
+
+    # 正确读法：带上 scope ⇒ 放过（不会一个请求都不发就退出）
+    st = quota.check_or_raise(planned=1, allow_partial=True, scope="")
+    assert st.used == 0
+    # 且**不**把别的出口的余量当成自己的（不要“合计还有余量”当依据）
+    assert st.limit == config.REG_QUOTA_MAX
+
+
+# ── [13] 槽位收尾摘要：按出口分别报，绝不把合计当上限 ────────────────
+def test_13_slots_summary_never_reports_the_aggregate_as_a_limit(scope_env):
+    """🔴 收尾那行不能把「各出口之和」与「单出口上限」相比。"""
+    scopes = {
+        "http://127.0.0.1:7901": "203.0.113.1",
+        "http://127.0.0.1:7902": "203.0.113.2",
+        "http://127.0.0.1:7903": "203.0.113.3",
+    }
+    quota.record("a@x.com", scope="203.0.113.1")
+    quota.record("b@x.com", scope="203.0.113.1")  # 出口1 满（2/2）
+    quota.record("c@x.com", scope="203.0.113.2")  # 出口2 余 1
+    # 出口3 余 2
+    # 合计 3 > limit 2 ⇒ 无 scope 的 describe() 会假性说“已用尽”
+    assert "已用尽" in quota.status().describe()
+
+    out = quota.slots_summary(list(scopes), scope_of=scopes.__getitem__)
+    assert "余 0/1/2" in out, out
+    assert "合计余 3" in out, out
+    assert "1 个出口已满" in out, out
+    # 🔴 这两句是缺陷的本体：说“已用尽/几分钟后可再注册”就是在押人白等
+    assert "已用尽" not in out, out
+    assert "可再注册" not in out, out
+
+
+def test_13b_slots_summary_flags_unmapped_egress(scope_env):
+    """没登记出口 IP 映射的槽位不能静默消失 —— 它的余量是“未知”，不是 0。"""
+    scopes = {"http://127.0.0.1:7901": "203.0.113.1"}
+
+    def scope_of(url):
+        if url not in scopes:
+            raise ValueError(f"槽位 {url} 的出口 IP 未知")
+        return scopes[url]
+
+    out = quota.slots_summary(["http://127.0.0.1:7901", "http://127.0.0.1:7902"], scope_of=scope_of)
+    assert "1 个出口未登记映射" in out, out

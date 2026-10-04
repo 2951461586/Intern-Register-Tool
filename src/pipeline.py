@@ -102,12 +102,12 @@ QUOTA_STREAK_STOP = 2
 # 结构化之后，"服务端到底返回了什么"由**打标点**决定，读点只认字段。
 # 打标点与读点分离：打标只在**真的拿到服务端响应**的地方做（`stage_register`），
 # 读点统一走 `error_kind_of()`。
-ERR_NONE = ""                # 没有错误
-ERR_QUOTA = "quota"          # 服务端返回 `B0000` —— **出口维度**累计配额触顶
-ERR_QUOTA_GUARD = "quota_guard"   # 本地守卫主动中止，**一个请求都没发**
-ERR_REJECTED = "rejected"    # 服务端明确拒绝了这次注册（非配额）
-ERR_NETWORK = "network"      # 网络 / 超时 / HTTP 层
-ERR_BROWSER = "browser"      # 浏览器阶段（登录 / 建 key）
+ERR_NONE = ""  # 没有错误
+ERR_QUOTA = "quota"  # 服务端返回 `B0000` —— **出口维度**累计配额触顶
+ERR_QUOTA_GUARD = "quota_guard"  # 本地守卫主动中止，**一个请求都没发**
+ERR_REJECTED = "rejected"  # 服务端明确拒绝了这次注册（非配额）
+ERR_NETWORK = "network"  # 网络 / 超时 / HTTP 层
+ERR_BROWSER = "browser"  # 浏览器阶段（登录 / 建 key）
 
 
 def is_quota_block(text: str) -> bool:
@@ -238,21 +238,30 @@ class QuotaGovernor:
             #    而这里的历史计数（scope 为空）属于老的单代理出口。拿它来拦
             #    槽位批次会得到错误的结论（实测：53/40 "超额"，但 6 个新出口
             #    其实一个都没用过）。改由每个 producer 按自己的 scope 单独检查。
-            self.log(f"ℹ 槽位模式：跳过全局配额守卫（本地计数 "
-                     f"{quota.status().describe()} 是**老出口**的，与新槽位无关）——\n"
-                     f"  改按槽位分别计数，每个出口各自独立。")
+            #    ⚠ 这里必须写 `scope=""`：无参的 `status()` 是"统计**全部** scope"，
+            #      话就变成假的了（那是各出口之和，不是老出口）。
+            self.log(
+                f"ℹ 槽位模式：跳过全局配额守卫（本地计数 "
+                f"{quota.status(scope='').describe()} 是**老出口**的，与新槽位无关）——\n"
+                f"  改按槽位分别计数，每个出口各自独立。"
+            )
             return count
         # 🔴 为什么必须在**投递前**拦，而不是等失败再停：`B0000` 是累计量限制，
         #    撞上之后**连单账号都注册不了**，继续投递只是在加深封禁、并制造
         #    一堆假失败记录。宁可少跑几个，也不要撞墙。详见 src/quota.py。
         # allow_partial：还有余量就放行（这里自己裁计划量），余量为 0 才抛。
-        st = quota.check_or_raise(planned=count, allow_partial=True)
+        # 🔴 `scope=""` 不是可选项：这是**单代理**那次运行的额度，无参的
+        #    `status()` 会把所有出口的计数加起来，与单个出口的上限比 ——
+        #    槽位模式跑过之后就会假性触顶，把非槽位运行整个拦住（实测踩到）。
+        st = quota.check_or_raise(planned=count, allow_partial=True, scope="")
         if st.used + count > st.limit:
             keep = st.remaining
-            self.log(f"⚠ 本地配额保护：计划注册 {count} 个，但{st.describe()} "
-                     f"—— 本次只跑 {keep} 个。\n"
-                     f"  想全跑：调大 IR_REG_QUOTA_MAX，或加 --ignore-quota"
-                     f"（先确认服务端确实已恢复）。")
+            self.log(
+                f"⚠ 本地配额保护：计划注册 {count} 个，但{st.describe()} "
+                f"—— 本次只跑 {keep} 个。\n"
+                f"  想全跑：调大 IR_REG_QUOTA_MAX，或加 --ignore-quota"
+                f"（先确认服务端确实已恢复）。"
+            )
             return keep
         return count
 
@@ -304,8 +313,7 @@ class QuotaGovernor:
         if not st.exhausted:
             return ""
         log(f"跳过（出口 {scope} 配额保护：{st.describe()}）")
-        return (f"quota guard: 出口 {scope} 本地计数已满"
-                f"（{st.describe()}），未发请求")
+        return f"quota guard: 出口 {scope} 本地计数已满（{st.describe()}），未发请求"
 
     # ── 运行中 ────────────────────────────────────────────────────
     def note_result(self, ok: bool, rec) -> None:
@@ -422,9 +430,17 @@ class AccountRecord:
 # ────────────────────────────────────────────────────────────────
 # Stage 1+2：建邮箱 → 注册 → 收信激活（纯 HTTP）
 # ────────────────────────────────────────────────────────────────
-def stage_register(mail: MailboxSource, sso: SSOClient, rec: AccountRecord,
-                   *, mail_domain: str | None = None, log=print, gate=None,
-                   should_stop=None, quota_scope: str = "") -> bool:
+def stage_register(
+    mail: MailboxSource,
+    sso: SSOClient,
+    rec: AccountRecord,
+    *,
+    mail_domain: str | None = None,
+    log=print,
+    gate=None,
+    should_stop=None,
+    quota_scope: str = "",
+) -> bool:
     """gate: 可选的限速闸门（callable）。在真正调用 register/byEmail 前触发，
     用于把注册速率钉死在安全区间内（见 REG_MIN_INTERVAL）。
 
@@ -474,14 +490,13 @@ def stage_register(mail: MailboxSource, sso: SSOClient, rec: AccountRecord,
 
         t = time.time()
         if gate:
-            gate()          # 限速：两次 register/byEmail 之间至少 REG_MIN_INTERVAL
+            gate()  # 限速：两次 register/byEmail 之间至少 REG_MIN_INTERVAL
         mark("gate_wait", t)
 
         # 最后一道闸：过了限速闸门（全局串行点）再看一眼配额信号。
         # 放这里才看得到前序请求的结果 —— 理由见本函数 docstring。
         if should_stop is not None and should_stop():
-            raise _QuotaAbort(
-                f"已确认 {QUOTA_MSG_CODE}（累计配额触顶），未发注册请求")
+            raise _QuotaAbort(f"已确认 {QUOTA_MSG_CODE}（累计配额触顶），未发注册请求")
 
         t = time.time()
         reg = sso.register(rec.username, rec.email, rec.password)
@@ -595,10 +610,17 @@ def browser_settings():
 # ────────────────────────────────────────────────────────────────
 # Stage 3+4+5：登录 → 领额度 → 建 Key → 校验
 # ────────────────────────────────────────────────────────────────
-def stage_login_key(rec: AccountRecord, *, session=None, headless: bool = True,
-                    key_name: str = "default", verbose: bool = True,
-                    screenshot_prefix: str | None = None, log=print,
-                    verify: bool = True) -> bool:
+def stage_login_key(
+    rec: AccountRecord,
+    *,
+    session=None,
+    headless: bool = True,
+    key_name: str = "default",
+    verbose: bool = True,
+    screenshot_prefix: str | None = None,
+    log=print,
+    verify: bool = True,
+) -> bool:
     """Stage 3+4+5。
 
     session: 若传入 `BrowserSession`，复用它（批量场景）；否则自建浏览器。
@@ -618,15 +640,20 @@ def stage_login_key(rec: AccountRecord, *, session=None, headless: bool = True,
     t0 = time.time()
     try:
         if session is not None:
-            res = session.login(rec.email, rec.password,
-                                screenshot_prefix=screenshot_prefix,
-                                verbose=verbose)
+            res = session.login(
+                rec.email, rec.password, screenshot_prefix=screenshot_prefix, verbose=verbose
+            )
         else:
             from .browser import login as browser_login
 
-            res = browser_login(rec.email, rec.password, headless=headless,
-                                settings=browser_settings(),
-                                screenshot_prefix=screenshot_prefix, verbose=verbose)
+            res = browser_login(
+                rec.email,
+                rec.password,
+                headless=headless,
+                settings=browser_settings(),
+                screenshot_prefix=screenshot_prefix,
+                verbose=verbose,
+            )
         if not res.ok:
             raise RuntimeError(res.reason or "login failed")
         rec.jwt = res.jwt
@@ -736,9 +763,14 @@ def verify_keys(records: list, *, verbose: bool = True, log=print) -> None:
 # ────────────────────────────────────────────────────────────────
 # 单账号
 # ────────────────────────────────────────────────────────────────
-def run_one(*, headless: bool = True, key_name: str = "default",
-            mail_domain: str | None = None, verbose: bool = True,
-            screenshot_prefix: str | None = None) -> AccountRecord:
+def run_one(
+    *,
+    headless: bool = True,
+    key_name: str = "default",
+    mail_domain: str | None = None,
+    verbose: bool = True,
+    screenshot_prefix: str | None = None,
+) -> AccountRecord:
     """完整跑通一个账号（顺序执行，便于调试）。"""
     rec = AccountRecord(created_at=time.strftime("%Y-%m-%d %H:%M:%S"))
 
@@ -753,8 +785,14 @@ def run_one(*, headless: bool = True, key_name: str = "default",
 
     if verbose:
         print("    launching browser to pass captcha ...", flush=True)
-    stage_login_key(rec, headless=headless, key_name=key_name, verbose=verbose,
-                    screenshot_prefix=screenshot_prefix, log=log)
+    stage_login_key(
+        rec,
+        headless=headless,
+        key_name=key_name,
+        verbose=verbose,
+        screenshot_prefix=screenshot_prefix,
+        log=log,
+    )
     rec.timings["total"] = round((time.time() - t0) * 1000)
     return rec
 
@@ -762,11 +800,18 @@ def run_one(*, headless: bool = True, key_name: str = "default",
 # ────────────────────────────────────────────────────────────────
 # 批量：两段式流水线
 # ────────────────────────────────────────────────────────────────
-def run_batch(*, count: int, workers: int = 2, headless: bool = True,
-              key_name: str = "default", mail_domain: str | None = None,
-              verbose: bool = True, screenshot_prefix: str | None = None,
-              reg_concurrency: int | None = None,
-              ignore_quota: bool = False) -> list[AccountRecord]:
+def run_batch(
+    *,
+    count: int,
+    workers: int = 2,
+    headless: bool = True,
+    key_name: str = "default",
+    mail_domain: str | None = None,
+    verbose: bool = True,
+    screenshot_prefix: str | None = None,
+    reg_concurrency: int | None = None,
+    ignore_quota: bool = False,
+) -> list[AccountRecord]:
     """批量注册，注册阶段与浏览器阶段流水线并行。
 
     Args:
@@ -800,9 +845,12 @@ def run_batch(*, count: int, workers: int = 2, headless: bool = True,
     #    行为与加这个功能之前**完全一致**。
     pool = build_pool(log=lambda m: print(f"[pool] {m}", flush=True))
     if pool is not None:
-        print(f"🔀 槽位代理池已启用：{pool.describe()}\n"
-              f"   每个注册 worker 独占一个出口 IP。"
-              f"（{QUOTA_MSG_CODE} 只封那个出口，不再中断整批）", flush=True)
+        print(
+            f"🔀 槽位代理池已启用：{pool.describe()}\n"
+            f"   每个注册 worker 独占一个出口 IP。"
+            f"（{QUOTA_MSG_CODE} 只封那个出口，不再中断整批）",
+            flush=True,
+        )
 
     # ── 配额守卫（三处决策都收在 QuotaGovernor 里）──────────────────
     # 开跑前拦 + 拿租约前预筛 + 拿到租约后复查 + 运行中哨兵。
@@ -815,14 +863,15 @@ def run_batch(*, count: int, workers: int = 2, headless: bool = True,
     #    不打印），往那里加一行会当场把测试打红 —— 而测试是对的，不该为了
     #    一行提示去改"历史判据"。
     if ignore_quota:
-        print("⚠ --ignore-quota 已开启：本地配额守卫**全部三个检查点**都跳过"
-              "（开跑前裁剪 / 拿租约前预筛 / 拿到租约后复查）。\n"
-              f"  本地计数只是保守估计，跳过它意味着**完全依赖服务端**："
-              f"真触顶会直接吃 {QUOTA_MSG_CODE}。\n"
-              "  那是出口维度的封禁，不会自己恢复 —— 请自行确认窗口已滑出。",
-              flush=True)
-    gov = QuotaGovernor(pool=pool, ignore=ignore_quota,
-                        log=lambda m: print(m, flush=True))
+        print(
+            "⚠ --ignore-quota 已开启：本地配额守卫**全部三个检查点**都跳过"
+            "（开跑前裁剪 / 拿租约前预筛 / 拿到租约后复查）。\n"
+            f"  本地计数只是保守估计，跳过它意味着**完全依赖服务端**："
+            f"真触顶会直接吃 {QUOTA_MSG_CODE}。\n"
+            "  那是出口维度的封禁，不会自己恢复 —— 请自行确认窗口已滑出。",
+            flush=True,
+        )
+    gov = QuotaGovernor(pool=pool, ignore=ignore_quota, log=lambda m: print(m, flush=True))
     count = gov.allow(count)
 
     reg_conc = reg_concurrency or min(count, REG_CONCURRENCY)
@@ -845,12 +894,10 @@ def run_batch(*, count: int, workers: int = 2, headless: bool = True,
         from .browser import BrowserSession
 
         try:
-            with BrowserSession(headless=headless,
-                                settings=browser_settings()) as sess:
+            with BrowserSession(headless=headless, settings=browser_settings()) as sess:
                 if verbose:
                     with print_lock:
-                        print(f"[worker {wid + 1}] browser ready "
-                              f"({sess.launch_ms}ms)", flush=True)
+                        print(f"[worker {wid + 1}] browser ready ({sess.launch_ms}ms)", flush=True)
                 while True:
                     item = q.get()
                     try:
@@ -861,13 +908,17 @@ def run_batch(*, count: int, workers: int = 2, headless: bool = True,
                         if rec.status != "init":
                             continue
                         with print_lock:
-                            print(f"[{idx + 1}/{count}] "
-                                  f"login+key: {rec.email}", flush=True)
+                            print(f"[{idx + 1}/{count}] login+key: {rec.email}", flush=True)
                         stage_login_key(
-                            rec, session=sess, key_name=key_name,
-                            verbose=False, log=make_log(idx), verify=False,
-                            screenshot_prefix=(f"{screenshot_prefix}_{idx + 1}"
-                                               if screenshot_prefix else None),
+                            rec,
+                            session=sess,
+                            key_name=key_name,
+                            verbose=False,
+                            log=make_log(idx),
+                            verify=False,
+                            screenshot_prefix=(
+                                f"{screenshot_prefix}_{idx + 1}" if screenshot_prefix else None
+                            ),
                         )
                     finally:
                         q.task_done()
@@ -890,8 +941,9 @@ def run_batch(*, count: int, workers: int = 2, headless: bool = True,
                 finally:
                     q.task_done()
 
-    consumers = [threading.Thread(target=consumer_worker, args=(i,), daemon=True)
-                 for i in range(workers)]
+    consumers = [
+        threading.Thread(target=consumer_worker, args=(i,), daemon=True) for i in range(workers)
+    ]
     for t in consumers:
         t.start()
 
@@ -915,8 +967,7 @@ def run_batch(*, count: int, workers: int = 2, headless: bool = True,
         # "并发窗口内已起飞"的任务无效。
         if gov.hit():
             rec.status = "skipped"
-            rec.error = (f"quota guard: 前序账号已触发 {QUOTA_MSG_CODE}，"
-                         f"跳过投递（未发请求）")
+            rec.error = f"quota guard: 前序账号已触发 {QUOTA_MSG_CODE}，跳过投递（未发请求）"
             rec.error_kind = ERR_QUOTA_GUARD
             log("跳过（配额保护）")
             q.put((idx, rec))
@@ -931,14 +982,14 @@ def run_batch(*, count: int, workers: int = 2, headless: bool = True,
                 # 🔴 `accept=gov.check_slot` 把"出口配额已满"的槽位**提前排除在
                 #    候选之外**（判据在 `QuotaGovernor.check_slot`，理由也写在那里）。
                 try:
-                    lease = pool.acquire(timeout=config.IR_PROXY_SLOT_TIMEOUT,
-                                         accept=gov.check_slot)
+                    lease = pool.acquire(
+                        timeout=config.IR_PROXY_SLOT_TIMEOUT, accept=gov.check_slot
+                    )
                 except NoEligibleSlot as ex:
                     # 有空闲槽位，但它们的出口配额全满了。
                     # 配额要几小时才滑出窗口 ⇒ 等下去毫无意义，直接记"跳过"。
                     rec.status = "skipped"
-                    rec.error = (f"quota guard: 所有出口配额均已满"
-                                 f"（{ex}），未发请求")
+                    rec.error = f"quota guard: 所有出口配额均已满（{ex}），未发请求"
                     rec.error_kind = ERR_QUOTA_GUARD
                     log(f"跳过（所有出口配额已满：{ex}）")
                     return
@@ -967,9 +1018,16 @@ def run_batch(*, count: int, workers: int = 2, headless: bool = True,
             # 🔴 proxy 必须传**具体值**给这个 client，不能改全局 `IR_PROXY` ——
             #    多个 producer 同时改全局会互相踩（见 config.apply_proxy）。
             sso = SSOClient(proxy=(lease.url if lease else None))
-            ok = stage_register(mail, sso, rec, mail_domain=mail_domain, log=log,
-                                gate=reg_gate, should_stop=gov.hit,
-                                quota_scope=scope)
+            ok = stage_register(
+                mail,
+                sso,
+                rec,
+                mail_domain=mail_domain,
+                log=log,
+                gate=reg_gate,
+                should_stop=gov.hit,
+                quota_scope=scope,
+            )
         except Exception as ex:
             rec.status = "failed"
             rec.error = f"register: {ex}"
@@ -984,14 +1042,23 @@ def run_batch(*, count: int, workers: int = 2, headless: bool = True,
         list(ex.map(producer, range(count)))
 
     if gov.hit():
-        skipped = sum(1 for r in results
-                      if r is not None and r.status == "skipped")
+        skipped = sum(1 for r in results if r is not None and r.status == "skipped")
         # 只有真跳过了才报 —— skipped==0 说明配额信号是在**最后几个任务
         # 已经起飞之后**才确认的，此时失败列表已经把故事讲完了，再报一次是噪声。
         if skipped:
-            print(f"⚠ 运行中确认配额触顶（连续 {QUOTA_STREAK_STOP} 个 "
-                  f"{QUOTA_MSG_CODE}）→ 跳过后续 {skipped} 个（未发请求）。\n"
-                  f"  {quota.status().describe()}", flush=True)
+            # 同样按模式选口径：槽位模式下无参 `status()` 是"各出口之和"。
+            if pool is not None:
+                quota_line = quota.slots_summary(
+                    [pool.url_of(i) for i in range(1, pool.size + 1)], scope_of=config.slot_scope
+                )
+            else:
+                quota_line = quota.status(scope="").describe()
+            print(
+                f"⚠ 运行中确认配额触顶（连续 {QUOTA_STREAK_STOP} 个 "
+                f"{QUOTA_MSG_CODE}）→ 跳过后续 {skipped} 个（未发请求）。\n"
+                f"  {quota_line}",
+                flush=True,
+            )
 
     # 投递结束哨兵
     for _ in range(workers):
@@ -1010,13 +1077,19 @@ def run_batch(*, count: int, workers: int = 2, headless: bool = True,
         if bans and len(bans) >= pool.size:
             # 每个出口都被封过至少一次 —— 这是**换订阅/换节点**的信号，
             # 不是"再加并发"的信号。加并发只会更快撞穿剩下的出口。
-            print(f"   ⚠ {pool.size} 个槽位**每个**都被封过至少一次"
-                  f"（累计 {sum(bans.values())} 次）—— 出口池整体在目标站点"
-                  f"那边都不干净了。该换订阅或换节点，加并发无效。", flush=True)
+            print(
+                f"   ⚠ {pool.size} 个槽位**每个**都被封过至少一次"
+                f"（累计 {sum(bans.values())} 次）—— 出口池整体在目标站点"
+                f"那边都不干净了。该换订阅或换节点，加并发无效。",
+                flush=True,
+            )
         elif bans:
             clean = pool.size - len(bans)
-            print(f"   仍有 {clean}/{pool.size} 个出口从未被封 —— "
-                  f"把并发提到 {clean} 以内是有意义的。", flush=True)
+            print(
+                f"   仍有 {clean}/{pool.size} 个出口从未被封 —— "
+                f"把并发提到 {clean} 以内是有意义的。",
+                flush=True,
+            )
 
     elapsed = round(time.time() - t_start, 1)
     for r in results:

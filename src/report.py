@@ -43,8 +43,9 @@ def latency_summary(totals) -> str:
     xs = [float(x) for x in totals]
     if not xs:
         return ""
-    return (f"{statistics.mean(xs):.1f} / {statistics.median(xs):.1f} / "
-            f"{min(xs):.1f} / {max(xs):.1f}")
+    return (
+        f"{statistics.mean(xs):.1f} / {statistics.median(xs):.1f} / {min(xs):.1f} / {max(xs):.1f}"
+    )
 
 
 def fmt_ms(v) -> str:
@@ -56,8 +57,18 @@ def fmt_ms(v) -> str:
     return f"{v / 1000:.1f}" if isinstance(v, (int, float)) else "-"
 
 
-def render_batch_report(results, written, wall, *, workers, quota, config,
-                        error_kind_of, err_quota) -> None:
+def render_batch_report(
+    results,
+    written,
+    wall,
+    *,
+    workers,
+    quota,
+    config,
+    error_kind_of,
+    err_quota,
+    quota_line: str | None = None,
+) -> None:
     """渲染一批结果的收尾报告（直接 `print` 到 stdout）。
 
     `results`   —— `AccountRecord` 列表（成功 / 跳过 / 失败都在里面）
@@ -68,6 +79,9 @@ def render_batch_report(results, written, wall, *, workers, quota, config,
     `config`    —— 有 `CHAT_API_BASE` / `CHAT_MODELS` 的对象
     `error_kind_of` —— `src.pipeline.error_kind_of`
     `err_quota`     —— `src.pipeline.ERR_QUOTA`
+    `quota_line`    —— 收尾那行的配额描述。`None`（默认）= 走
+                       `quota.status().describe()`，与加这个参数之前**逐字节相同**。
+                       槽位模式下由调用方换掉，理由见收尾那段的注释。
 
     ⚠ 判「配额触顶」走 `error_kind_of()`（**结构化字段**），不搜 `error` 文本 ——
       我们自己拼的守卫文案里也含 `B0000`，文本匹配会把主动中止算进来。
@@ -107,11 +121,13 @@ def render_batch_report(results, written, wall, *, workers, quota, config,
             total_s = f"{total_ms / 1000:.1f}"
         else:
             total_s = "-"
-        print(f"  {(r.email or '(未建邮箱)'):40s} "
-              f"{fmt_ms(tm.get('register')):>7s} "
-              f"{fmt_ms(tm.get('login')):>7s} "
-              f"{fmt_ms(tm.get('key')):>7s} "
-              f"{total_s:>7s}")
+        print(
+            f"  {(r.email or '(未建邮箱)'):40s} "
+            f"{fmt_ms(tm.get('register')):>7s} "
+            f"{fmt_ms(tm.get('login')):>7s} "
+            f"{fmt_ms(tm.get('key')):>7s} "
+            f"{total_s:>7s}"
+        )
     if totals:
         # 表头单独取变量：原来写成 `{'…%d…' % len(totals):40s}` 嵌在 f-string 里，
         # 两种插值语法叠在一起，UP031 会报。提取后只剩一种。
@@ -121,9 +137,9 @@ def render_batch_report(results, written, wall, *, workers, quota, config,
         #    原来把「均值」单独留在上面那行的合计列，这一行仍写四个标签却只给
         #    三个值 ⇒ 读者按左对齐会把 39.1（真正的**最慢**）读成「最快」。
         #    （2026-09-20 复跑时按日志原始表格复算才发现：数字没错，是标签错位。）
-        print(f"  {'   ' + LATENCY_LABELS:40s} "
-              f"{'':>7s} {'':>7s} {'':>7s} "
-              f"{latency_summary(totals)}")
+        print(
+            f"  {'   ' + LATENCY_LABELS:40s} {'':>7s} {'':>7s} {'':>7s} {latency_summary(totals)}"
+        )
 
     # 登录内部阶段。
     # 🔴 看**最慢**的那个，不是第一个 —— 批量吞吐由关键路径（最慢账号）决定，
@@ -139,16 +155,18 @@ def render_batch_report(results, written, wall, *, workers, quota, config,
             slow = r
     if slow is not None:
         detail = slow.timings["login_detail"]
-        print(f"\n登录内部阶段（最慢账号 {slow.email}，"
-              f"登录 {fmt_ms(slow.timings.get('login'))}s）：")
+        print(
+            f"\n登录内部阶段（最慢账号 {slow.email}，登录 {fmt_ms(slow.timings.get('login'))}s）："
+        )
         prev = 0
         for k, v in detail.items():
             print(f"  {k:16s} +{(v - prev) / 1000:6.2f}s   (累计 {v / 1000:5.2f}s)")
             prev = v
         cs = (slow.stages or {}).get("captcha_path")
         if cs:
-            print(f"  验证码通路       Path {cs}"
-                  f"{'（TRACELESS 自过，零点击）' if cs == 'A' else ''}")
+            print(
+                f"  验证码通路       Path {cs}{'（TRACELESS 自过，零点击）' if cs == 'A' else ''}"
+            )
 
     # 注册内部阶段（取最慢账号，同样理由）
     slow_reg = None
@@ -156,12 +174,15 @@ def render_batch_report(results, written, wall, *, workers, quota, config,
         sub = (r.timings or {}).get("register_detail")
         if not sub:
             continue
-        if slow_reg is None or (r.timings or {}).get("register", 0) > \
-                (slow_reg.timings or {}).get("register", 0):
+        if slow_reg is None or (r.timings or {}).get("register", 0) > (slow_reg.timings or {}).get(
+            "register", 0
+        ):
             slow_reg = r
     if slow_reg is not None:
-        print(f"\n注册内部阶段（最慢账号 {slow_reg.email or '(未建邮箱)'}，"
-              f"注册 {fmt_ms(slow_reg.timings.get('register'))}s）：")
+        print(
+            f"\n注册内部阶段（最慢账号 {slow_reg.email or '(未建邮箱)'}，"
+            f"注册 {fmt_ms(slow_reg.timings.get('register'))}s）："
+        )
         d = slow_reg.timings["register_detail"]
         # 🔴 `register_detail` 里绝大部分键是**毫秒**（下面统一 /1000），
         #    但计数类字段不是 —— 混进去会打印成 "0.05s"，看着像个耗时。
@@ -174,8 +195,7 @@ def render_batch_report(results, written, wall, *, workers, quota, config,
                 # 拆开看：邮件真正到达 vs 我们的轮询开销。两者修法完全不同。
                 ad, po = d.get("arrival_delay_ms"), d.get("poll_overhead_ms")
                 if ad is not None and po is not None:
-                    label = (f"mail_wait        （到达 {ad / 1000:.2f}s + "
-                             f"轮询 {po / 1000:.2f}s）")
+                    label = f"mail_wait        （到达 {ad / 1000:.2f}s + 轮询 {po / 1000:.2f}s）"
                     print(f"  {label}")
                     continue
             print(f"  {label:16s} {v / 1000:6.2f}s")
@@ -190,30 +210,36 @@ def render_batch_report(results, written, wall, *, workers, quota, config,
             print(f"  {'收信轮询':14s} {polls:6d} 次 /api/inbox{extra}")
 
     # 登录耗时离散度 —— 方差比均值更能解释批量总时长
-    logins = sorted(r.timings.get("login", 0) / 1000
-                    for r in ok if r.timings.get("login"))
+    logins = sorted(r.timings.get("login", 0) / 1000 for r in ok if r.timings.get("login"))
     if len(logins) >= 2:
         print(f"\n登录耗时分布（{len(logins)} 个账号）：")
-        print(f"  最快 {logins[0]:.1f}s · 中位 {logins[len(logins) // 2]:.1f}s "
-              f"· 最慢 {logins[-1]:.1f}s · 极差 {logins[-1] - logins[0]:.1f}s")
+        print(
+            f"  最快 {logins[0]:.1f}s · 中位 {logins[len(logins) // 2]:.1f}s "
+            f"· 最慢 {logins[-1]:.1f}s · 极差 {logins[-1] - logins[0]:.1f}s"
+        )
         if logins[-1] > logins[0] * 1.5:
-            print("  ⚠ 极差超过最快值的 1.5 倍 —— 总时长多半由这个离群值决定，"
-                  "不是均值")
+            print("  ⚠ 极差超过最快值的 1.5 倍 —— 总时长多半由这个离群值决定，不是均值")
 
     if results:
         tm0 = results[0].timings or {}
         kd, bt = tm0.get("keys_done"), tm0.get("batch_total")
         print(f"\n吞吐（{len(results)} 个账号，workers={workers}）：")
         if kd and bt:
-            print(f"  关键路径（全部 key 建出）: {kd / 1000:6.1f}s "
-                  f"= {kd / 1000 / len(results):5.1f}s / 账号")
-            print(f"  含末尾统一校验          : {bt / 1000:6.1f}s "
-                  f"= {bt / 1000 / len(results):5.1f}s / 账号")
-            rounds = -(-len(results) // workers)     # ceil
+            print(
+                f"  关键路径（全部 key 建出）: {kd / 1000:6.1f}s "
+                f"= {kd / 1000 / len(results):5.1f}s / 账号"
+            )
+            print(
+                f"  含末尾统一校验          : {bt / 1000:6.1f}s "
+                f"= {bt / 1000 / len(results):5.1f}s / 账号"
+            )
+            rounds = -(-len(results) // workers)  # ceil
             if rounds * workers != len(results):
-                print(f"  ⚠ {len(results)} 个账号 / {workers} 路 = {rounds} 轮，"
-                      f"最后一轮有 worker 空转。"
-                      f"凑成 {rounds * workers} 个能摊得更薄。")
+                print(
+                    f"  ⚠ {len(results)} 个账号 / {workers} 路 = {rounds} 轮，"
+                    f"最后一轮有 worker 空转。"
+                    f"凑成 {rounds * workers} 个能摊得更薄。"
+                )
         else:
             print(f"  总耗时 {wall:6.1f}s = {wall / len(results):5.1f}s / 账号")
 
@@ -251,7 +277,12 @@ def render_batch_report(results, written, wall, *, workers, quota, config,
         print("  ⚠ 不要用 chat.intern-ai.org.cn（那是网页版，要绑手机号）")
 
     # 收尾再报一次配额，让"本次消耗了几个"一眼可见。
-    qs2 = quota.status()
-    print(f"\n本地配额：{qs2.describe()}（本次成功 {len(ok)} 个，"
-          f"跳过 {len(skipped)} 个）")
+    # 🔴 `quota_line` 交给调用方渲染：`quota.status()` 无参是"统计**全部** scope"，
+    #    槽位模式下它就是"几个出口加起来"，而它的 `limit` 是**单个出口**的上限 ——
+    #    拿合计去比会假性打印「配额已用尽…N 分钟后可再注册」
+    #    （2026-10-04 实测：合计 42/40，而各出口真实余量还有 161）。
+    #    本模块**有意**不知道"槽位"这个概念（只依赖注入对象，见上面 docstring），
+    #    所以由知道的那一方（`run.py`）把整行传进来；不传则维持原行为。
+    line = quota_line if quota_line is not None else quota.status().describe()
+    print(f"\n本地配额：{line}（本次成功 {len(ok)} 个，跳过 {len(skipped)} 个）")
     print("=" * 72)

@@ -78,8 +78,7 @@ def state_path() -> Path:
     override = os.getenv("IR_QUOTA_STATE")
     if override:
         return Path(override).expanduser()
-    return (Path(__file__).resolve().parents[1]
-            / ".workbuddy-ai" / "state" / "register_quota.jsonl")
+    return Path(__file__).resolve().parents[1] / ".workbuddy-ai" / "state" / "register_quota.jsonl"
 
 
 def _read_all() -> list[dict]:
@@ -95,7 +94,7 @@ def _read_all() -> list[dict]:
             try:
                 rec = json.loads(line)
             except ValueError:
-                continue          # 半截行（并发写）直接跳过
+                continue  # 半截行（并发写）直接跳过
             if isinstance(rec, dict) and isinstance(rec.get("ts"), (int, float)):
                 out.append(rec)
     except OSError:
@@ -146,9 +145,9 @@ class QuotaStatus:
             return 0.0
         ts = self.ts_sorted
         if len(ts) >= n:
-            pivot = ts[n - 1]          # 第 n 早那条；它滑出即可放行
+            pivot = ts[n - 1]  # 第 n 早那条；它滑出即可放行
         elif self.oldest_ts is not None:
-            pivot = self.oldest_ts     # 兜底：信息不全时宁可保守（偏乐观）
+            pivot = self.oldest_ts  # 兜底：信息不全时宁可保守（偏乐观）
         else:
             return 0.0
         return max(pivot + self.window_h * 3600 - time.time(), 0.0)
@@ -157,10 +156,14 @@ class QuotaStatus:
         left = f"{self.used}/{self.limit}"
         if self.exhausted:
             w = self.wait_seconds()
-            extra = (f"，超额 {self.used - self.limit} 条、需滑出 {self.must_expire} 条"
-                     if self.used > self.limit else "")
-            return (f"配额已用尽（{left}{extra}；窗口 {self.window_h:g}h），"
-                    f"{w / 60:.1f} 分钟后可再注册")
+            extra = (
+                f"，超额 {self.used - self.limit} 条、需滑出 {self.must_expire} 条"
+                if self.used > self.limit
+                else ""
+            )
+            return (
+                f"配额已用尽（{left}{extra}；窗口 {self.window_h:g}h），{w / 60:.1f} 分钟后可再注册"
+            )
         return f"配额 {left}（窗口 {self.window_h:g}h）"
 
 
@@ -190,16 +193,74 @@ def shortfall_hint(total_left: int, planned: int, ignore_quota: bool) -> str:
         if total_left >= planned:
             return ""
         # 开关打开 ⇒ 本地数字只是参考，不构成"会跳过"的承诺。
-        return (f"   ℹ 本地额度只剩 {total_left} 个（< 计划 {planned}）"
-                f"，但 --ignore-quota 已开启 ⇒ **不会因此跳过任何账号**，\n"
-                f"     直接按计划跑，是否触顶由服务端决定。")
+        return (
+            f"   ℹ 本地额度只剩 {total_left} 个（< 计划 {planned}）"
+            f"，但 --ignore-quota 已开启 ⇒ **不会因此跳过任何账号**，\n"
+            f"     直接按计划跑，是否触顶由服务端决定。"
+        )
     if total_left == 0:
-        return ("   ⚠ 所有出口额度都已用尽，这一批会全部被跳过（未发请求）。\n"
-                "     等窗口滑出，或加 --ignore-quota（有被目标站封 IP 的风险）。")
+        return (
+            "   ⚠ 所有出口额度都已用尽，这一批会全部被跳过（未发请求）。\n"
+            "     等窗口滑出，或加 --ignore-quota（有被目标站封 IP 的风险）。"
+        )
     if total_left < planned:
-        return (f"   ⚠ 可用额度 {total_left} < 计划 {planned}，"
-                f"会有约 {planned - total_left} 个被跳过（未发请求）。")
+        return (
+            f"   ⚠ 可用额度 {total_left} < 计划 {planned}，"
+            f"会有约 {planned - total_left} 个被跳过（未发请求）。"
+        )
     return ""
+
+
+def slots_summary(slots: list[str], *, scope_of) -> str:
+    """槽位模式下的配额摘要 —— **按出口分别**统计，绝不把合计与单出口上限比。
+
+    🔴 为什么必须有这个函数（2026-10-04 实测踩到）：
+    `status()` 无参 = **统计全部 scope**，而 `QuotaStatus.limit` 是**单个出口**
+    的上限（`REG_QUOTA_MAX`）。拿合计去跟它比会假性触顶。实测一批跑完打印：
+
+        本地配额：配额已用尽（42/40，超额 2 条、需滑出 3 条；窗口 24h），
+                  1298.9 分钟后可再注册
+
+    而各出口真实余量合计还有 **161**。照它判断会白停 22 小时。
+    同一个陷阱还在 **`check_or_raise()` 不传 scope** 时咬人 —— 那边不只是
+    显示错，会真的把单代理那次运行拦住（见 `tests/test_quota.py` 的 [12]）。
+
+    `scope_of`（= `config.slot_scope`）用**注入**而不是在本模块 import config：
+    与 `QuotaGovernor` 同一套做法 —— 好测，也不把这个叶子模块拉进配置链。
+
+    ⚠ 未登记映射的槽位报“未登记”而**不**计入合计：它的余量是“未知”，
+      当成 0 会让人以为“这个出口满了”。
+
+    返回形如：
+        槽位模式 5 个出口：余 31/35/33/34/38（各自上限 40）⇒ 合计余 171；
+        1 个出口已满；1 个出口未登记映射；按出口分别计数，合计只是参考、不是上限
+    """
+    lefts: list[str] = []
+    total = 0
+    full = 0
+    unmapped = 0
+    for url in slots:
+        try:
+            scope = scope_of(url)
+        except ValueError:
+            unmapped += 1
+            continue
+        st = status(scope=scope)
+        left = max(0, st.limit - st.used)
+        total += left
+        lefts.append(str(left))
+        if st.exhausted:
+            full += 1
+    parts = [
+        f"槽位模式 {len(slots)} 个出口：余 {'/'.join(lefts)}"
+        f"（各自上限 {config.REG_QUOTA_MAX}）⇒ 合计余 {total}"
+    ]
+    if full:
+        parts.append(f"{full} 个出口已满")
+    if unmapped:
+        parts.append(f"{unmapped} 个出口未登记映射")
+    parts.append("按出口分别计数，合计只是参考、不是上限")
+    return "；".join(parts)
 
 
 def status(scope: str | None = None) -> QuotaStatus:
@@ -242,11 +303,14 @@ def record(email: str = "", scope: str = "") -> QuotaStatus:
         try:
             p.parent.mkdir(parents=True, exist_ok=True)
             with p.open("a", encoding="utf-8") as f:
-                f.write(json.dumps({"ts": time.time(), "email": email,
-                                    "scope": scope},
-                                   ensure_ascii=False) + "\n")
+                f.write(
+                    json.dumps(
+                        {"ts": time.time(), "email": email, "scope": scope}, ensure_ascii=False
+                    )
+                    + "\n"
+                )
         except OSError:
-            pass          # 记不上不该让主流程失败
+            pass  # 记不上不该让主流程失败
     st = status(scope=scope or None)
     _compact_if_needed(st)
     return st
@@ -269,13 +333,15 @@ def _compact_if_needed(st: QuotaStatus) -> None:
             # 对半截行是**静默跳过**的，症状是计数莫名变少（保护变松）。
             # 实现已归一，见 src/fsutil.py（2026-09-20）。
             fsutil.atomic_write_text(
-                p, "".join(json.dumps(r, ensure_ascii=False) + "\n" for r in keep))
+                p, "".join(json.dumps(r, ensure_ascii=False) + "\n" for r in keep)
+            )
         except OSError:
             pass
 
 
-def check_or_raise(*, planned: int = 1, allow_partial: bool = False,
-                   scope: str | None = None) -> QuotaStatus:
+def check_or_raise(
+    *, planned: int = 1, allow_partial: bool = False, scope: str | None = None
+) -> QuotaStatus:
     """启动前检查。配额不足时抛 `QuotaExceeded`。
 
     allow_partial=False（默认，严格）：计划量只要超出剩余就抛。
@@ -331,8 +397,7 @@ def _iter_json_blobs(paths):
                         if not n.lower().endswith(".json"):
                             continue
                         try:
-                            yield f"{p.name}:{n}", json.loads(
-                                z.read(n).decode("utf-8"))
+                            yield f"{p.name}:{n}", json.loads(z.read(n).decode("utf-8"))
                         except (ValueError, KeyError, UnicodeDecodeError):
                             continue
             except (zipfile.BadZipFile, OSError) as ex:
@@ -382,8 +447,7 @@ def backfill(paths, *, dry_run: bool = False) -> tuple[int, int]:
             added += 1
 
     if no_ts:
-        print(f"  ⚠ {no_ts} 条缺 created_at，无法还原时间 → 未补录"
-              f"（宁可少记，也不能给错时间戳）")
+        print(f"  ⚠ {no_ts} 条缺 created_at，无法还原时间 → 未补录（宁可少记，也不能给错时间戳）")
 
     if not dry_run and new_recs:
         p = state_path()
@@ -406,13 +470,11 @@ def _main(argv=None) -> int:
         dry = "--dry-run" in args
         paths = [a for a in args if not a.startswith("--")]
         if not paths:
-            print("用法：python -m src.quota backfill <results.json | *.zip>..."
-                  " [--dry-run]")
+            print("用法：python -m src.quota backfill <results.json | *.zip>... [--dry-run]")
             return 2
         print(f"补录来源 {len(paths)} 个 → state: {state_path()}")
         added, dup = backfill(paths, dry_run=dry)
-        print(f"  新增 {added} 条，重复 {dup} 条"
-              + ("（--dry-run，未写入）" if dry else ""))
+        print(f"  新增 {added} 条，重复 {dup} 条" + ("（--dry-run，未写入）" if dry else ""))
         print(f"  {status().describe()}")
         return 0
 
