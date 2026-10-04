@@ -78,7 +78,8 @@ from typing import Protocol, runtime_checkable
 import requests
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
-from . import config
+from common import config
+
 from .tempmail import Mail, TempMailClient
 
 __all__ = [

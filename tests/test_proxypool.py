@@ -21,7 +21,7 @@ import time
 
 import pytest
 
-from src import config
+from common import config
 from src.proxypool import (
     AllSlotsDead,
     NoEligibleSlot,

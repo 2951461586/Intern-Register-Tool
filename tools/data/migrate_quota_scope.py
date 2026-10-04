@@ -49,7 +49,8 @@ from pathlib import Path
 
 from _path import ROOT  # noqa: F401  （副作用：把 tools/ 与仓库根加进 sys.path）
 
-from src import config, ledger  # noqa: E402
+from common import config  # noqa: E402
+from src import ledger  # noqa: E402
 
 DEFAULT_LEDGER = ROOT / ".workbuddy-ai" / "state" / "register_quota.jsonl"
 DEFAULT_RESULTS = ledger.ledger_path()

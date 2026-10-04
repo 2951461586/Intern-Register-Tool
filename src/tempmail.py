@@ -23,7 +23,7 @@ from dataclasses import dataclass
 
 import requests
 
-from . import config
+from common import config
 
 
 @dataclass

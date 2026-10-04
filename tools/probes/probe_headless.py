@@ -18,7 +18,7 @@ import time
 sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
 from _path import ROOT  # noqa: F401  （副作用：把 tools/ 与仓库根加进 sys.path）
 
-from src import config
+from common import config
 from src.mailbox import make_source
 from src.pipeline import gen_password, gen_username
 from src.sso import SSOClient

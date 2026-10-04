@@ -29,7 +29,8 @@ from pathlib import Path
 
 import pytest
 
-from src import config, quota
+from common import config
+from src import quota
 from src.pipeline import (
     ERR_NETWORK,
     ERR_QUOTA,

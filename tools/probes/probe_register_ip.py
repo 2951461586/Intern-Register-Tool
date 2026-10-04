@@ -86,7 +86,7 @@ def exit_ip(proxy: str, *, timeout: int = 20) -> str:
 
 def register_once(proxy: str) -> dict:
     """建一个邮箱 + 打一枪 `register/byEmail`。返回结构化结果。"""
-    from src import config
+    from common import config
     from src.mailbox import make_source
     from src.pipeline import gen_password, is_quota_block
     from src.sso import SSOClient
@@ -177,7 +177,7 @@ def main() -> int:
               f"或用 --proxy 指定。")
         return 1
     if args.mail_domain:
-        from src import config
+        from common import config
         config.WORKER_DOMAIN = args.mail_domain
 
     print(f"待测出口 {len(slots)} 个，本次最多测 {min(args.limit, len(slots))} 个"

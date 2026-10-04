@@ -41,7 +41,9 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import asdict, dataclass, field
 
-from . import config, quota
+from common import config
+
+from . import quota
 from .discovery import DiscoveryClient
 from .mailbox import MailboxSource, make_source
 from .proxypool import NoEligibleSlot, build_pool

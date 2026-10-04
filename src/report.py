@@ -7,7 +7,7 @@
 凡是需要被测试钉住的格式/判据，一律抽到这里来。
 
 本模块**只依赖 stdlib**（`statistics`），刻意**不 import
-`src.pipeline` / `src.config` / `src.quota`**：
+`src.pipeline` / `common.config` / `src.quota`**：
 
   * `error_kind_of` / `ERR_QUOTA` / `config` / `quota` 全部由调用方**注入** ——
     报告层因此是依赖图上的叶子，不会把 `requests` 之类的传递依赖带进测试链
@@ -96,8 +96,13 @@ def render_batch_report(results, written, wall, *, workers, quota, config,
         stages = [tm.get(k) for k in ("register", "login", "key")]
         # 三段齐了才算"端到端合计"；缺段（失败/跳过）给 "-"，
         # 否则会把半截耗时和完整耗时放在一列里比，是误导。
-        if all(isinstance(v, (int, float)) for v in stages):
-            total_ms = sum(stages)
+        # ⚠ 先筛成 `nums` 再比长度，而不是 `all(...)` + `sum(stages)`：
+        #   两者判据**完全等价**（数值项数相等 ⇔ 全部都是数值），但 `all()`
+        #   不能把 `stages` 的元素类型收窄成数值 —— 静态检查器会在 `sum()`
+        #   处报 `list[Unknown | None]`。
+        nums = [v for v in stages if isinstance(v, (int, float))]
+        if len(nums) == len(stages):
+            total_ms = sum(nums)
             totals.append(total_ms / 1000)
             total_s = f"{total_ms / 1000:.1f}"
         else:

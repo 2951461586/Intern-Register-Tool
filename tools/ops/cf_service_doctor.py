@@ -72,9 +72,10 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from typing import Any
 
 # 🔴 这行有两个副作用，两个都必须：把 `tools/` 与仓库根加进 `sys.path`，
-#    以及**加载 `.env`**（链：`_path` → `_bootstrap` → `import src.config`）。
+#    以及**加载 `.env`**（链：`_path` → `_bootstrap` → `import common.config`）。
 #    少了它，下面 `os.getenv("IR_WORKER_BASE")` 拿到空串，脚本会报
 #    "缺少 IR_WORKER_BASE / --base" —— 看起来像**没配**，实际是**没读**。
 #    实测踩过（2026-09-19），报错指向症状不指向原因。
@@ -105,8 +106,14 @@ OK, BAD, WARN, INFO = "✅", "❌", "⚠️ ", "  "
 # ══════════════════════════════════════════════════════════════════════════
 # HTTP 小工具
 # ══════════════════════════════════════════════════════════════════════════
-def api_get(path: str, token: str, timeout: int = 60):
-    """打 CF REST API。返回 (status, json|bytes)。"""
+def api_get(path: str, token: str, timeout: int = 60) -> tuple[int, Any]:
+    """打 CF REST API。返回 (status, json|bytes)。
+
+    ⚠ 返回标注是 `(int, Any)` 而不是省略：`json.loads()` 的结果本来就是
+      **无类型 JSON**，不写的话静态检查器会就地从函数体**猜**一个更窄的类型
+      （实测猜成 `str`），然后在**很远的调用点**（`.get(...)` 那一堆）报一堆
+      “str 没有 get” 的错 —— 指向症状、不指向原因。
+    """
     req = urllib.request.Request(API + path, headers={"Authorization": f"Bearer {token}"})
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
@@ -119,7 +126,8 @@ def api_get(path: str, token: str, timeout: int = 60):
             return e.code, {"raw": body[:400].decode("utf-8", "replace")}
 
 
-def d1_query(sql: str, token: str, account: str, db: str, timeout: int = 60):
+def d1_query(sql: str, token: str, account: str, db: str,
+              timeout: int = 60) -> tuple[bool, list, dict, str | None, str | None]:
     """打 D1 HTTP API。
 
     返回 (ok, rows, meta, err_code, err_msg)。
@@ -155,7 +163,15 @@ def d1_query(sql: str, token: str, account: str, db: str, timeout: int = 60):
     return ok, (res.get("results") or []), (res.get("meta") or {}), code, msg
 
 
-def gql(query: str, variables: dict, token: str, timeout: int = 120):
+def gql(query: str, variables: dict, token: str,
+        timeout: int = 120) -> dict:
+    """打 CF GraphQL。返回**解析后的响应对象**。
+
+    ⚠ 返回标注 `dict` 是**契约**：CF 的 GraphQL 响应恒为对象（错误分支也
+      返回 `{"errors": [...]}`），调用方一律 `j.get(...)`。不标注的话
+      静态检查器会就地从 `json.loads()` 猜类型，然后在下面那些 `.get()`
+      处报错。
+    """
     req = urllib.request.Request(
         f"{API}/graphql",
         data=json.dumps({"query": query, "variables": variables}).encode(),

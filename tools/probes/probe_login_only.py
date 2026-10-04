@@ -173,7 +173,7 @@ def main() -> int:
     for e, _ in accts:
         print(f"  - {e}")
 
-    from src import config
+    from common import config
     from src.browser import BrowserSession
     from src.browser.settings import BrowserSettings
 

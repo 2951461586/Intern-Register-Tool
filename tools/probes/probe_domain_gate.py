@@ -105,7 +105,7 @@ def solve_waf(challenge_html: str, proxy: str) -> str:
        —— 这里只做转发。两个拷贝的下场是漂移：探针能解、生产不能解，
        而且各自的“实测结论”会开始不一致。
     """
-    from src import config
+    from common import config
     from src.browser.settings import BrowserSettings
     from src.browser.waf import solve_acw_challenge
 
@@ -123,7 +123,7 @@ def shoot(
 
     🔴 429 是**网关层限流**，不是业务判定 —— 直接采信会得出「域名被拒」的假结论。
     """
-    from src import config
+    from common import config
     from src.crypto_rsa import encrypt_password
     from src.pipeline import gen_password, gen_username
 
@@ -218,7 +218,7 @@ def main() -> int:
     ap.add_argument("--out", default=str(DEFAULT_OUT))
     args = ap.parse_args()
 
-    from src import config
+    from common import config
 
     domains = args.domains or ([] if args.addresses else list(DEFAULT_DOMAINS))
     addresses = args.addresses or []

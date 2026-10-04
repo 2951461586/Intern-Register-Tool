@@ -27,7 +27,7 @@ import time
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import padding
 
-from . import config
+from common import config
 
 _PUBLIC_KEY = serialization.load_der_public_key(
     base64.b64decode(config.SSO_PUBKEY_B64)

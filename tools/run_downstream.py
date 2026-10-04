@@ -124,7 +124,7 @@ def run_one(d: dict, *, headless: bool, create: bool, key_name: str,
     # ── Stage 3：登录 ─────────────────────────────────────────
     t = time.time()
     try:
-        from src import config
+        from common import config
         from src.browser import BrowserSession
         from src.browser.settings import BrowserSettings
 

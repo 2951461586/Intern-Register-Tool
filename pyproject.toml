@@ -34,8 +34,10 @@ dev = [
 # 🔴 `packages` 是**显式列表**，不会自动发现子包。
 #    2026-09-19 阶段 B 把 `browser_login.py` 拆成 `src/browser/` 之后，
 #    漏加这一项就会让构建出来的 wheel **缺整个子包**，而且不报错。
+#    2026-10-04 阶段 B 又把 `config.py` 搬成顶层 `common/` —— 同一个坑，
+#    同一处补。**每次新增顶层包（或子包）都要回到这里加。**
 [tool.setuptools]
-packages = ["src", "src.browser"]
+packages = ["src", "src.browser", "common"]
 
 
 [tool.pytest.ini_options]

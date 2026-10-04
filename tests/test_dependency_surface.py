@@ -355,34 +355,39 @@ def test_relative_import_resolution(pkg_parts, level, module, expect):
 
 
 # ─────────────────────────────────────────────────────────────────
-# 包边界：`src/browser/` 与共享叶子 `config`
+# 包边界：`src/browser/` 必须对项目内其他包**零依赖**
 # ─────────────────────────────────────────────────────────────────
-# 为什么单独钉这两条
-# ------------------
-# pi-lens 的评审图把 `src <-> src/browser` 报成一个环。**文件级其实没有环** ——
-# 环是目录粒度的，而它之所以良性（不可传递），只靠两个前提：
+# pi-lens 的评审图把 `src <-> src/browser` 报成一个环。**文件级没有环** ——
+# 环是目录粒度的：`src/browser/` 是 `src/` 的子包，却回头 `from .. import config`
+# 去读配置。
 #
-#   ① `src/browser/**` 只从 `src/` 里拿 `config` 这一样东西；
-#   ② `src/config.py` 自己是叶子（只依赖 stdlib）。
+# 2026-10-04 分两步处理：
 #
-# 两条同时成立时 `browser → config → ∅`，环永远闭合不了。任何一条被破坏
-# （比如哪天有人给 browser 加了 `from .. import quota`），环就变成可传递的
-# **真环**，症状是 import 顺序相关的诡异失败。
+#   阶段 A  参数注入：browser 改从边界收 `BrowserSettings`，回边归零。
+#           这一步之后环**已经不存在**了。
+#   阶段 B  把 `config` 搬到顶层 `common/`（不再在 `src/` 里）。
+#           这一步**不是**为了消环，而是为了不让环**悄悄长回来**：
+#           以前在 `src/browser/` 里写 `from .. import config` 能跑、不报错、
+#           没有任何红灯；现在它是 ImportError，写的人当场知道走错了路。
+#           （同一个思路见 `tools/_bootstrap.py`："不能靠下次注意，要靠
+#           结构上不可能漏"。）
+#
+# ⇒ 本文件断言的不变量：
+#   ① `src/browser/**` 不 import 项目里**任何**其他包（`src.*` / `common.*`）；
+#   ② 共享叶子（`common/config.py`）只依赖 stdlib。
 #
 # ⚠ 这里断言的是**当前设计**，不是"唯一正确的设计"。改动它必须是有意的。
 
 BROWSER_DIR = ROOT / "src" / "browser"
 
-# 🔴 `src/browser/**` 允许从 `src/` 里 import 的模块 —— **空集**。
-#    2026-10-04 之前这里是 `{"src.config"}`（browser 直接读 `config` 的
-#    `CHROME_PATH` / `SSO_BASE` / ...）。那天做了参数注入改造（阶段 A）：
-#    browser 改从边界收 `BrowserSettings`（`src/browser/settings.py`），
-#    回边归零，这里随之收窄。
+# 🔴 `src/browser/**` 允许 import 的项目内模块 —— **空集**。
+#    阶段 A 之前这里是 `{"src.config"}`（browser 直接读 `config` 的
+#    `CHROME_PATH` / `SSO_BASE` / ...）。注入改造之后归零。
 #
-#    ⇒ 现在 `src -> src/browser` 是**单向边**，目录粒度的环不存在了。
-#    ⚠ 配对的 `test_config_module_stays_a_leaf` 仍必须绿：`config` 是叶子时
-#      `src/browser → src.config` 也无害，但那时环又回来了 —— 两条一起看才完整。
-ALLOWED_SRC_IMPORTS_FOR_BROWSER: set[str] = set()
+#    ⚠ 阶段 B 把 config 搬去了 `common/`，但**不要**因此把 `common.config`
+#      加回来：那同样是绕过注入面。browser 要什么就由边界传什么，见
+#      `src/browser/settings.py`。
+ALLOWED_PROJECT_IMPORTS_FOR_BROWSER: set[str] = set()
 
 
 def _browser_files() -> list[Path]:
@@ -393,8 +398,9 @@ def _imports_in_source(src: str, pkg_parts: list[str]) -> list[tuple[int, str]]:
     """源码文本里**全部** import → `[(行号, 绝对模块名), ...]`。
 
     🔴 与 `_module_level_imports` 相反：这里**要**递归进函数体。
-      依赖边就是依赖边，包不包在函数里不影响 DAG —— `src/browser/waf.py`
-      的 `from .. import config` 恰好就在函数体内，漏掉它就等于漏掉一条回边。
+      依赖边就是依赖边，包不包在函数里不影响 DAG —— 阶段 A 之前
+      `src/browser/waf.py` 的 `from .. import config` 恰好在函数体内，
+      漏掉它就等于漏掉一条回边。
 
     ⚠ 相对导入会同时产出**裸包名与逐符号名**（`from .. import config`
       → `"src"` 与 `"src.config"`）。调用方看逐符号名即可；裸包名是
@@ -447,52 +453,61 @@ def test_the_browser_boundary_scan_has_a_non_empty_surface():
     )
 
 
-def test_browser_src_boundary_is_respected():
-    """`src/browser/**` 对 `src/` 的依赖只许是 `ALLOWED_SRC_IMPORTS_FOR_BROWSER`。
+def test_browser_project_boundary_is_respected():
+    """`src/browser/**` 不许 import 项目里**任何**其他包（`src.*` / `common.*`）。
 
-    失败时说明：`src/browser/` 里出现了新的、指向父包 `src/` 的 import。
-    **修法**：不要往 `ALLOWED_SRC_IMPORTS_FOR_BROWSER` 里加 —— 那会让
-    `src <-> src/browser` 从良性环变成可传递的真环。改成从边界注入
-    （见 `src/browser/settings.py` 的 `BrowserSettings`），或把共享叶子
-    移到 `src/` 之外的包。
+    失败时说明：browser 里出现了绕过注入面的直接依赖。**修法**：不要往
+    `ALLOWED_PROJECT_IMPORTS_FOR_BROWSER` 里加名字。需要什么外部值，就
+    加进 `BrowserSettings`（`src/browser/settings.py`）由边界注入。
+
+    🔴 顶层包集合用 `_first_party_tops()` **动态算**：将来再冒出第三个
+      顶层包时，这条规则会自动把它也管住，不需要回来改测试。
     """
     offenders: list[str] = []
     for path in _browser_files():
         for line, mod in _all_imports(path):
-            # `src` 是包锚点，`src.browser.*` 是包内
-            if mod == "src" or mod.startswith("src.browser"):
+            parts = mod.split(".")
+            if parts[0] not in _first_party_tops():
                 continue
-            if not mod.startswith("src."):
+            # 裸包锚点（`from .. import config` 会产出 `src`）不是一条真依赖
+            if len(parts) == 1:
                 continue
-            if mod not in ALLOWED_SRC_IMPORTS_FOR_BROWSER:
+            # 包**内部**的互相引用不算越界
+            if parts[0] == "src" and parts[1] == "browser":
+                continue
+            if mod not in ALLOWED_PROJECT_IMPORTS_FOR_BROWSER:
                 offenders.append(f"  ✗ {_rel(path)}:{line}  import {mod}")
 
     assert not offenders, (
-        "src/browser/ 越过了对 src/ 的边界：\n" + "\n".join(sorted(set(offenders)))
-        + f"\n\n当前放行：{sorted(ALLOWED_SRC_IMPORTS_FOR_BROWSER) or '（空集）'}"
-        + "\n修法：改成从边界注入（src/browser/settings.py），"
+        "src/browser/ 越过了对项目内其他包的边界：\n"
+        + "\n".join(sorted(set(offenders)))
+        + f"\n\n当前放行：{sorted(ALLOWED_PROJECT_IMPORTS_FOR_BROWSER) or '（空集）'}"
+        + "\n修法：加进 src/browser/settings.py 的 BrowserSettings 由边界注入，"
         + "不要把这个名字加进放行集合。"
     )
 
 
 def test_config_module_stays_a_leaf():
-    """`src/config.py` 的依赖面**只有 stdlib** —— 它是整个 DAG 的叶子。
+    """`common/config.py` 的依赖面**只有 stdlib** —— 它是整个 DAG 的叶子。
 
-    这条是上面那条的地基：`src/browser → src.config` 之所以不构成环，
-    全靠 `src.config` 不反向依赖任何本项目模块。一旦它 import 了 `src.browser`
-    或 `src.quota`，环立刻变成真的。
+    它是阶段 B 唯一搬进 `common/` 的东西，理由见 `common/__init__.py`：
+    被 `src/` 的多条不相干分支共用，且**必须**是叶子 —— 它一旦 import 了
+    `src.browser` 或 `src.quota`，`src/browser → … → config → src.browser`
+    就是一条可传递的**真环**。
     """
+    cfg = ROOT / "common" / "config.py"
+    assert cfg.is_file(), f"共享叶子不见了：{_rel(cfg)}" 
     offenders: list[str] = []
-    for line, mod in _all_imports(ROOT / "src" / "config.py"):
+    for line, mod in _all_imports(cfg):
         top = mod.split(".")[0]
         if top in STDLIB or top == "__future__":
             continue
         if top in _first_party_tops():
-            offenders.append(f"  ✗ src/config.py:{line}  import {mod}")
+            offenders.append(f"  ✗ {_rel(cfg)}:{line}  import {mod}")
 
     assert not offenders, (
-        "src/config.py 不再是叶子（依赖了本项目内的模块）：\n"
+        "common/config.py 不再是叶子（依赖了本项目内的模块）：\n"
         + "\n".join(offenders)
-        + "\n\n`config` 必须只依赖 stdlib —— 否则 src <-> src/browser 的"
-        "良性环假设不成立。"
+        + "\n\n`config` 必须只依赖 stdlib —— 否则它就从'共享叶子'退化成"
+        "环上的一环。"
     )

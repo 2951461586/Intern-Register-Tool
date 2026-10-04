@@ -33,7 +33,8 @@ from functools import partial
 
 import requests
 
-from . import config
+from common import config
+
 from .crypto_rsa import encrypt_password
 
 

@@ -167,7 +167,7 @@ def _load_downstream_module(monkeypatch):
          顶层 import 得先把 `tools/` 塞进 `sys.path` —— 那是**全局副作用**，
          会改变同进程其他用例的 import 行为。
       2. 它顶部 `from _bootstrap import ROOT`，而 `_bootstrap` 的副作用是
-         **加载 `.env`**（末尾 `import src.config`）。在测试进程里跑它会把使用者
+         **加载 `.env`**（末尾 `import common.config`）。在测试进程里跑它会把使用者
          真实的 `IR_*` 灌进 `os.environ`，污染后续用例 ——
          `tests/test_tools_shim_parity.py` 正是为这个理由改用子进程。
 

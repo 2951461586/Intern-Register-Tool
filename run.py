@@ -95,7 +95,8 @@ def main():
     args = ap.parse_args()
 
     # 启动校验：缺凭据就立刻失败，别等跑了一半才发现全是 401。
-    from src import config, quota
+    from common import config
+    from src import quota
 
     missing = config.validate()
     if missing:

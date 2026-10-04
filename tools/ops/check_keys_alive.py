@@ -86,7 +86,7 @@ def probe_models(key: str, *, backoff: float = DEFAULT_BACKOFF,
     """
     import requests
 
-    from src import config
+    from common import config
 
     last = ""
     for attempt in range(max_retry + 1):

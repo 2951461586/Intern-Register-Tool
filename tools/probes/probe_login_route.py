@@ -25,7 +25,7 @@ from pathlib import Path
 
 from _path import ROOT  # noqa: F401  （副作用：把 tools/ 与仓库根加进 sys.path）
 
-from src import config  # noqa: E402
+from common import config  # noqa: E402
 from src.browser import CHROME_ARGS, build_login_url  # noqa: E402
 from src.browser.settings import BrowserSettings  # noqa: E402
 

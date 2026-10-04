@@ -10,7 +10,7 @@
 | **调用期读 env** | `quota.state_path()` / `proxypool.state_path()` | `monkeypatch.setenv("IR_QUOTA_STATE", …)` |
 
 🔴 混用的后果是**静默失效**：`config.py` 有 17 处 `os.getenv` 在**模块顶层**，
-值在 `import src.config` 那一刻就定死了。此后 `monkeypatch.setenv("IR_REG_QUOTA_MAX", "5")`
+值在 `import common.config` 那一刻就定死了。此后 `monkeypatch.setenv("IR_REG_QUOTA_MAX", "5")`
 **不报错、不生效** —— 用例照样跑完，只是测的不是它以为的那个上限。
 
 ⚠ 当前**没有 bug**：仓库里 11 处 `setattr(config, …)` 全部用对了。这条测试不是
@@ -24,7 +24,8 @@ from pathlib import Path
 
 import pytest
 
-from src import config, proxypool, quota
+from common import config
+from src import proxypool, quota
 
 
 # ── 机制一：import 期固化 ─────────────────────────────────────────────

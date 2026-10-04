@@ -26,7 +26,8 @@ import zipfile
 
 import pytest
 
-from src import config, quota
+from common import config
+from src import quota
 
 
 @pytest.fixture

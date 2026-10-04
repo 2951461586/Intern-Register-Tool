@@ -40,7 +40,8 @@ import pytest
 import requests
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
-from src import config, mailbox
+from common import config
+from src import mailbox
 from src.mailbox import (
     ChataiMailbox,
     ImapMailbox,

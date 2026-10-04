@@ -47,7 +47,7 @@ _ROOT = Path(__file__).resolve().parents[1]
 
 @pytest.fixture
 def settings():
-    """注入面的**假**配置 —— 字面量，不读 `src.config`。
+    """注入面的**假**配置 —— 字面量，不读 `common.config`。
 
     ⚠ 刻意不写 `BrowserSettings.from_config(config)`：本文件的宗旨是
       "零浏览器、零网络、零外部状态"，而 `config` 在 import 时会去读 `.env`

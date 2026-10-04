@@ -47,7 +47,7 @@ if str(ROOT) not in sys.path:
 # ── 加载 `.env` ─────────────────────────────────────────────────────
 # 必须排在 `sys.path` 插入**之后**，且必须早于任何 `os.getenv("IR_*")` 求值。
 #
-# 复用 `src/config.py` 的实现（它在导入时执行 `_load_dotenv(仓库根/.env)`），
+# 复用 `common/config.py` 的实现（它在导入时执行 `_load_dotenv(仓库根/.env)`），
 # 而不是在这里再写一份解析 —— `.env` 解析有若干细节（只填未设置的键、
 # 剥引号、忽略注释），两份实现必然漂移成"一个生效一个不生效"。
 #
@@ -66,11 +66,11 @@ if str(ROOT) not in sys.path:
 #
 # ⚠ `src/` 内部的模块**不受**这里保护（它们不经过本文件）。已知隐患：
 #    `src/browser/constants.py` 在导入时用 `os.getenv` 定值，若它先于
-#    `src.config` 被导入，`.env` 里配的 `IR_MICRO_BUDGET` 等会静默失效。
+#    `common.config` 被导入，`.env` 里配的 `IR_MICRO_BUDGET` 等会静默失效。
 #    当前 `.env` 没配这些键，所以无实际影响；改 `.env` 时留意。
 try:
-    import src.config  # noqa: F401
+    import common.config  # noqa: F401
 except ImportError:
-    # 没有 src 包的环境（例如只想用本文件算 ROOT）不应因此崩掉。
+    # 没有 common 包的环境（例如只想用本文件算 ROOT）不应因此崩掉。
     pass
 

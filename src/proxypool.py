@@ -112,7 +112,9 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
-from . import config, fsutil, redact
+from common import config
+
+from . import fsutil, redact
 
 
 def state_path() -> Path:

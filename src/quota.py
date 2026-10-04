@@ -66,7 +66,9 @@ import zipfile
 from dataclasses import dataclass
 from pathlib import Path
 
-from . import config, fsutil
+from common import config
+
+from . import fsutil
 
 _LOCK = threading.Lock()
 

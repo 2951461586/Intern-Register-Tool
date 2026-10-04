@@ -49,7 +49,7 @@ _spec = importlib.util.spec_from_file_location(
 pp = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(pp)
 
-from src import config  # noqa: E402
+from common import config  # noqa: E402
 
 DEFAULT_OUT = ROOT / ".workbuddy-ai" / "exports" / "slot_probe.json"
 

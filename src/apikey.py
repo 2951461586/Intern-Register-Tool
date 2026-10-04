@@ -18,7 +18,7 @@ from dataclasses import dataclass, field
 
 import requests
 
-from . import config
+from common import config
 
 
 @dataclass
