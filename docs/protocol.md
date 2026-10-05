@@ -280,8 +280,34 @@ Playwright 同步 API 只在调用其自身 API 时泵送事件循环；纯 `tim
 
 🔴 **解盾必须走当事出口**：挑战按出口 IP 下发，换 IP 解出来的 cookie 在原出口上没用。
 
+### 🔴 解盾浏览器的代理串**必须转换**，不能原样塞给 Playwright（2026-10-05）
+
+`solve_acw_challenge(html, proxy)` 收的是**原始代理串**（与 requests 侧同一份
+配置值）。把它直接交给 `browser.new_context(proxy={"server": px})` 会炸，
+两个**独立**的原因：
+
+| 原始串 | 直接塞 `{"server": px}` 的结果 |
+|---|---|
+| `host:port:user:pass`（`config.proxies()` 明确支持） | `Browser.new_context: Invalid URL` |
+| `scheme://user:pass@host:port`（补了 scheme 也不行） | `Page.goto: net::ERR_INVALID_AUTH_CREDENTIALS` |
+
+Playwright 要求 **`server` / `username` / `password` 三个字段分开**：
+
+```python
+{"server": "http://host:port", "username": "u", "password": "p"}
+```
+
+⇒ 由 `src/browser/waf.py::playwright_proxy()` 统一转换（语法与
+`common/config.py:proxies()` 一致，两处的“接受的写法集合”由
+`tests/test_waf_proxy_parsing.py` 用同一张用例表钉住）。语法不认识的串
+**抛 `ValueError`**，不返回“直连” —— 否则配置写错会被读成“盾没解开”。
+
+⚠ **为什么一直没暴露**：主流水线的槽位 URL 恰好是 `http://127.0.0.1:7901`
+（无账密、已是 URL）⇒ 怎么做都对。只有 `IR_PROXY` 走
+`host:port:user:pass` 时才炸。实测代价：一次 10 连打**全灭**。
+
 > 复现：`python tools/probes/probe_domain_gate.py`（三臂实验里就有解盾）。
-> 单测：`tests/test_sso_waf.py`。
+> 单测：`tests/test_sso_waf.py`、`tests/test_waf_proxy_parsing.py`。
 
 ## discovery 平台鉴权
 
