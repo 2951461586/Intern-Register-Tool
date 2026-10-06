@@ -299,6 +299,61 @@ def run_one(d: dict, *, headless: bool, create: bool, key_name: str, log=print) 
 
 
 # ────────────────────────────────────────────────────────────────
+def _run_deadline(
+    d: dict,
+    *,
+    deadline: float,
+    headless: bool,
+    create: bool,
+    key_name: str,
+    log=print,
+) -> dict:
+    """跑一个账号，**超过 `deadline` 秒就放弃并继续**（0 或负数 = 不设上限）。
+
+    🔴 为什么必须有：`BrowserSession.login(timeout=150, attempts=3, cooldown=15)`
+       最坏一个账号要 ~8 分钟，而 `as_completed` 要等**最慢**的那一个 ⇒
+       一个病态账号能让整批"看起来卡死"。2026-10-06 实测：11 个账号的跑批在
+       30 分钟处仍未返回，结果文件都没落盘（`jennifermiller834063@outlook.com`
+       单账号 `--workers 1` 也能复现 >300s 不返回）。
+
+    🔴 为什么用**守护线程**而不是 `future.result(timeout=…)`：后者**不取消**
+       已运行的线程，而 `ThreadPoolExecutor` 的关闭（以及解释器退出时的
+       `atexit` join）会等它 ⇒ 整批照样卡死。守护线程不阻塞解释器退出 ——
+       超时后主流程继续，被放弃的那个线程随进程结束一起消失。
+
+    ⚠ `box` **不需要锁**：主线程只在 `t.join()` 返回后才读它（join 是
+       happens-before 边界）；线程仍活着时走的是超时分支，根本不读 `box`。
+       （`log` 本身是调用方传入的、内部已带锁的闭包。）
+    """
+    box: dict = {}
+
+    def _target():
+        try:
+            box["out"] = run_one(d, headless=headless, create=create, key_name=key_name, log=log)
+        except Exception as ex:  # noqa: BLE001
+            box["out"] = {"email": d.get("email", ""), "downstream": f"crash: {str(ex)[:160]}"}
+
+    t = threading.Thread(target=_target, daemon=True, name="ds-" + str(d.get("email", "?"))[:40])
+    t.start()
+    t.join(timeout=deadline if deadline and deadline > 0 else None)
+    if t.is_alive():
+        log(f"⏱ 超过 {deadline:.0f}s 未返回 —— 放弃这个账号（继续下一条）")
+        return {"email": d.get("email", ""), "downstream": f"timeout: >{deadline:.0f}s"}
+    return box.get("out") or {"email": d.get("email", ""), "downstream": "crash: 无结果"}
+
+
+def _abandoned(r: dict) -> bool:
+    """这条结果**没有得出结论**（超时被放弃 / 崩溃）？
+
+    🔴 存在的理由：`results[i] = {**d, **out}` 是**超集**，而 `d`（输入台账记录）
+       可能带着**上一轮**的 `login_ms` / `key_id` / `credits`。汇总若直接
+       `r.get("login_ms")` 计数，一个超时账号会被报成“登录成功” ——
+       正是本项目最警惕的“指标全绿”。所以任何“成功”分子都要先排除这一类。
+    """
+    v = r.get("downstream")
+    return isinstance(v, str) and (v.startswith("timeout") or v.startswith("crash"))
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description="对已有账号跑下游全链路（零注册请求）")
     ap.add_argument("--from", dest="src", default=str(DEFAULT_IN), help="账号台账来源")
@@ -310,6 +365,12 @@ def main() -> int:
         default=0,
         help="其中前 N 个**真建新 key**（验证建 Key 路径）。"
         "0=全部只做幂等复用（默认，不污染 key 列表）",
+    )
+    ap.add_argument(
+        "--deadline",
+        type=float,
+        default=300.0,
+        help="单账号墙钟上限（秒）；超时则放弃该账号并继续下一条。0 = 不设上限（旧的卡批行为）",
     )
     ap.add_argument("--key-name", default="default", help="复用/新建的 key 名")
     # `--headless` / `--headful` 的接线与 `run.py` 共用（见 src/cli.py）。
@@ -376,8 +437,9 @@ def main() -> int:
             #    无论哪一方胜出，信息都不减少。
             results[i] = {
                 **d,
-                **run_one(
+                **_run_deadline(
                     d,
+                    deadline=args.deadline,
                     headless=args.headless,
                     create=(i < args.create),
                     key_name=args.key_name,
@@ -396,17 +458,26 @@ def main() -> int:
     results = [r for r in results if r]
 
     # ── 汇总 ──────────────────────────────────────────────────
+    # 🔴 被放弃的账号（超时 / 崩溃）**不能**计入任何“成功”分子（见 `_abandoned`）。
+    abandoned = [r for r in results if _abandoned(r)]
+    live = [r for r in results if not _abandoned(r)]
+
     def cnt(key, pred=lambda v: True):
-        return sum(1 for r in results if pred(r.get(key)))
+        return sum(1 for r in live if pred(r.get(key)))
 
     ok_login = cnt("login_ms")
     ok_key = cnt("key_id")
     ok_ver = cnt("verify", lambda v: isinstance(v, str) and v.startswith("ok"))
     no_key = cnt("verify", lambda v: v == "skipped: no plaintext key")
     pending = cnt("verify", lambda v: isinstance(v, str) and v.startswith("not active"))
+    timeouts = sum(1 for r in abandoned if str(r.get("downstream", "")).startswith("timeout"))
+    crashes = len(abandoned) - timeouts
 
     print("\n" + "=" * 72)
-    print(f"下游全链路  {n} 账号 / 并发 {args.workers}  wall={wall:.1f}s")
+    print(
+        f"下游全链路  {n} 账号 / 并发 {args.workers}  wall={wall:.1f}s"
+        + (f"  （{len(abandoned)} 个未得出结论）" if abandoned else "")
+    )
     print(f"  登录      {ok_login}/{n}")
     print(f"  只读额度  {cnt('credits')}/{n}")
     print(f"  建/复用Key {ok_key}/{n}")
@@ -415,16 +486,26 @@ def main() -> int:
         + (f"（{no_key} 个无明文 key 跳过）" if no_key else "")
         + (f"（{pending} 个新建 key 传播未到位）" if pending else "")
     )
+    if timeouts or crashes:
+        parts = []
+        if timeouts:
+            parts.append(f"超时 {timeouts}（单账号 >{args.deadline:.0f}s）")
+        if crashes:
+            parts.append(f"崩溃 {crashes}")
+        print(
+            f"  ⏱ 未得出结论 {len(abandoned)}/{n}：{'、'.join(parts)}"
+            f"—— 那几条**没有结论**，别当成失败；调大 --deadline 可重跑"
+        )
 
     # ── 额度分布：上一轮发现过非 10 的取值，这里必须显式列出来 ──
-    creds = [c for r in results if (c := r.get("credits"))]
+    creds = [c for r in live if (c := r.get("credits"))]
     if creds:
         uniq = sorted(set(creds))
         print(f"\n  credits 分布：{uniq}")
         # 把每个窗口的"已用/剩余"摊开 —— `available_credits` 只是各窗口的
         # 最小值，光看它分不清是哪个窗口被消耗了。
         print(f"  {'账号':38s} {'5h 已用/剩余':>18s} {'7d 已用/剩余':>18s}  available")
-        for r in results:
+        for r in live:
             b = r.get("balance_raw") or {}
             w = b.get("usage_windows") or {}
 
@@ -442,7 +523,7 @@ def main() -> int:
                 f"  {b.get('available_credits')}"
             )
 
-        odd = [r for r in results if r.get("credits") not in ("10.000000", "10")]
+        odd = [r for r in live if r.get("credits") not in ("10.000000", "10")]
         if odd:
             print(
                 f"\n  ⚠ {len(odd)} 个账号 credits ≠ 10（原始 balance 已存进"
@@ -451,7 +532,7 @@ def main() -> int:
 
     # 原始 balance 落盘：只读接口拿到的，是排查"额度去哪了"的唯一证据。
     # 追加式保存（按 email 覆盖同一条），避免每次跑都丢上一次的快照。
-    if any(r.get("balance_raw") for r in results):
+    if any(r.get("balance_raw") for r in live):
         dump_p = ROOT / ".workbuddy-ai" / "exports" / "balance_dump.json"
         dump_p.parent.mkdir(parents=True, exist_ok=True)
         old = {}
@@ -460,7 +541,7 @@ def main() -> int:
                 old = json.loads(dump_p.read_text(encoding="utf-8"))
             except (ValueError, OSError):
                 old = {}
-        for r in results:
+        for r in live:
             if r.get("balance_raw"):
                 old[r["email"]] = {
                     "at": time.strftime("%Y-%m-%d %H:%M:%S"),
