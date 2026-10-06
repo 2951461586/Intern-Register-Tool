@@ -201,7 +201,11 @@ def test_persist_failure_warns_instead_of_raising(tmp_path):
     c = WafCookieCache(path=blocker / "waf.json", log=warns.append)
     c.set("k", "ACW")  # 不得抛
 
-    assert warns and "写不回" in warns[0]
+    # ⚠ **不能**断言 `warns[0]`：`__init__` 的 `_load()` 对这个路径会**先**失败一次，
+    #    而它的异常类型**依平台而异** —— Linux 给 `NotADirectoryError`（记一条
+    #    「读不出」），Windows 给 `FileNotFoundError`（被静默跳过）。
+    #    CI（Linux）就是这样红的（2026-10-06）。只断言“写不回”这条出现过。
+    assert any("写不回" in w for w in warns)
 
 
 def test_missing_state_file_is_silent(tmp_path):
