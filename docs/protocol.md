@@ -351,6 +351,10 @@ Playwright 要求 **`server` / `username` / `password` 三个字段分开**：
 `waf_solves` / `waf_solve_ms` / `retries` / `transport_retries` /
 `http_429` / `http_5xx`。
 
+⚠ **“不判过期”不等于“能复用很久”**：实测**寿命只有小时级**（12:13 落盘的 cookie
+到 13:52 已全部失效 ⇒ TTL **< ~1.5h**）。实测表与对排批的影响见
+[`registration-limits.md`](registration-limits.md) 的「解盾 cookie 的复用寿命」一节。
+
 ### 🔴 重试必须重新过限速闸门（2026-10-06 落地）
 
 `_post` 的退避重试原先**绕过**了 `stage_register` 的速率闸门。多线程退避时长
