@@ -38,6 +38,7 @@ import random
 import string
 import threading
 import time
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import asdict, dataclass, field
 
@@ -47,7 +48,7 @@ from . import quota
 from .discovery import DiscoveryClient
 from .mailbox import MailboxSource, make_source
 from .proxypool import NoEligibleSlot, build_pool
-from .sso import SSOClient
+from .sso import SSOClient, WafCookieCache, waf_state_path
 
 # 注册阶段的并发度。纯 HTTP，可以给得比浏览器侧高。
 # 注意：并发度 ≠ 注册速率 —— 速率由下面的 REG_MIN_INTERVAL 闸门控制。
@@ -69,11 +70,14 @@ REG_CONCURRENCY = 4
 #
 # 取 1.2s = 实测干净的 1.0s + 20% 余量。
 #
-# ⚠ 但别指望它带来吞吐提升：**注册根本不是瓶颈**。
-#   workers=2 时浏览器侧的消耗速率是 2/18s ≈ 0.11 账号/秒，
-#   而 1.2s 闸门给出 0.83 账号/秒 —— 快 7 倍。
-#   收窄它的真实收益只有两点：① 首屏"账号就绪"更快，减少 worker 冷启动空转
-#   （workers=2/4 账号时约省 1.5s）；② 队列不会堆深，便于把 workers 调大。
+# 🔴 2026-10-05 修正：闸门**按出口 IP 分桶**（`_RateLimiter`），不再全局串行。
+#    限流与配额都是**按出口**生效的（见 `config.slot_scope`），全局闸门会把
+#    5 个槽位压成 **1 个**出口的速率。收窄的是"跨出口"，单出口的最小间隔仍是
+#    1.2s，没有放松。
+#    ⚠ 上面那张"1.2s 全清"的表是**单出口**测出来的。近三轮实测 429 仍是第一
+#      失败原因（47/81），而 `_post` 的退避重试原先**绕过**了闸门 ⇒ 多线程
+#      退避时长相同、重试请求同步撞车。现在每次重试都重新过闸门
+#      （见 `sso._post(retry_gate=…)`）；是否还要上调 1.2s 需重跑探针确认。
 REG_MIN_INTERVAL = 1.2
 
 # 注册接口在累计配额触顶时返回的 msgCode。
@@ -161,20 +165,61 @@ class _QuotaAbort(RuntimeError):
 
 
 class _RateLimiter:
-    """跨线程的最小间隔闸门：保证两次调用之间至少间隔 min_interval 秒。"""
+    """跨线程的最小间隔闸门，**按 scope 各自限速**。
+
+    scope 用的是**配额记账的同一个单位**（出口 IP，见 `config.slot_scope`）：
+    限流和配额一样是按出口生效的，所以两个**不同**出口不该互相排队 ——
+    原先的全局闸门会把 N 个出口的速率压成 **1 个**出口的速率（5 个槽位仍
+    每 1.2s 全局限一次，等于每出口 6s 一次），白白浪费出口。
+
+    scope 为空串时就是**单桶**，与加 scope 之前的行为**逐字相同**
+    （非槽位模式走这一支）。
+
+    🔴 预约在锁内、睡眠在锁外：若抱着锁 sleep，不同 scope 又会被串起来。
+       每个调用在锁内领一个**属于自己的时间点**，锁外再等到那个点。
+    """
 
     def __init__(self, min_interval: float):
         self.min_interval = min_interval
         self._lock = threading.Lock()
-        self._next = 0.0
+        self._next: dict[str, float] = {}
 
-    def __call__(self):
+    def __call__(self, scope: str = ""):
         with self._lock:
-            now = time.time()
-            if now < self._next:
-                time.sleep(self._next - now)
-                now = self._next
-            self._next = now + self.min_interval
+            target = max(time.time(), self._next.get(scope, 0.0))
+            self._next[scope] = target + self.min_interval
+        delay = target - time.time()
+        if delay > 0:
+            time.sleep(delay)
+
+
+class _SsoPool:
+    """按出口复用 `SSOClient` —— 让 WAF cookie 与 TCP/TLS 连接跨账号存活。
+
+    🔴 为什么复用是安全的：槽位租约是**独占**的（`proxypool` 规则 4：同一出口
+       IP 同时只有一个租约在外）⇒ 一个出口的 client 同一时刻只有一个线程在用。
+       `requests.Session` 的跨线程问题在这里不存在。
+
+    🔴 单出口模式（`proxy is None`）**不**复用 client：那时多个 producer 会共用
+       同一个 `Session`，而它的 cookie jar / 连接池没有跨线程保证。解盾复用
+       仍由共享的 `WafCookieCache` 负责（只共享 cookie 值，不共享 Session）。
+    """
+
+    def __init__(self, *, waf_cache=None, factory: Callable[..., SSOClient] = SSOClient):
+        self._factory = factory
+        self._waf_cache = waf_cache
+        self._lock = threading.Lock()
+        self._by_proxy: dict[str, SSOClient] = {}
+
+    def get(self, proxy: str | None) -> SSOClient:
+        if proxy is None:
+            return self._factory(proxy=None, waf_cache=self._waf_cache)
+        with self._lock:
+            c = self._by_proxy.get(proxy)
+            if c is None:
+                c = self._factory(proxy=proxy, waf_cache=self._waf_cache)
+                self._by_proxy[proxy] = c
+            return c
 
 
 class QuotaGovernor:
@@ -430,6 +475,21 @@ class AccountRecord:
 # ────────────────────────────────────────────────────────────────
 # Stage 1+2：建邮箱 → 注册 → 收信激活（纯 HTTP）
 # ────────────────────────────────────────────────────────────────
+def _merge_sso_stats(sso, into: dict, prefix: str = "") -> None:
+    """把 `SSOClient` 的埋点（解盾耗时 / 重试次数 / 429 数）并入 `register_detail`。
+
+    🔴 为什么用 duck-typing 而不是给 `SSOClient` 定个 Protocol：
+       `tests/test_error_kind.py` 的 `FakeSSO` **刻意**只实现 `stage_register`
+       真正会调到的**业务**方法（多给一个就等于放弃“多调一次接口当场炸”
+       这条约束）。埋点不是业务，所以这里缺失即跳过。
+    """
+    take = getattr(sso, "take_stats", None)
+    if take is None:
+        return
+    for k, v in take().items():
+        into[f"{prefix}{k}"] = v
+
+
 def stage_register(
     mail: MailboxSource,
     sso: SSOClient,
@@ -441,18 +501,20 @@ def stage_register(
     should_stop=None,
     quota_scope: str = "",
 ) -> bool:
-    """gate: 可选的限速闸门（callable）。在真正调用 register/byEmail 前触发，
-    用于把注册速率钉死在安全区间内（见 REG_MIN_INTERVAL）。
+    """gate: 可选的限速闸门（`callable(scope)`）。在**每一次** register/byEmail
+    写请求（含 `_post` 内部的重试）前触发，把注册速率钉在安全区间内
+    （见 REG_MIN_INTERVAL）。scope = `quota_scope`，闸门**按出口各自限速**。
 
     should_stop: 可选的无参 callable，返回 True 表示**已确认配额触顶**，
     此时**不发注册请求**、直接把记录标成 skipped。
 
-    quota_scope: 出口作用域（槽位池模式下传 `"slot3"`）。服务端配额按出口 IP
-    记，所以本地计数也必须按出口分开 —— 见 `quota.status()` 的说明。
-    空串 = 单出口模式，与加这个参数之前的行为完全一致。
+    quota_scope: 出口作用域（槽位池模式下传出口 IP，见 `config.slot_scope`）。
+    服务端配额与写限流都按出口 IP 生效，所以本地计数与限速也必须按出口分开
+    —— 见 `quota.status()` 与 `_RateLimiter`。空串 = 单出口模式（单桶，
+    与加这些参数之前的行为一致）。
 
-    🔴 为什么这个检查必须放在 `gate()` **之后**：`gate` 是全局串行点
-    （所有 producer 在这里排队），放在它后面才保证"看到前一个的失败结果"。
+    🔴 为什么配额复查必须放在 `gate()` **之后**：`gate` 是**该出口**的串行点，
+    放在它后面才保证"看到前一个请求的结果"。
     放在 `producer` 开头只能挡住**尚未启动**的任务 —— 而 `ThreadPoolExecutor`
     会把 `min(count, reg_conc)` 个任务**同时**启动，它们会在任何失败发生之前
     一起通过检查（实测：count=4 / reg_conc=4 时 4 个 B0000、0 个跳过）。
@@ -467,6 +529,20 @@ def stage_register(
 
     def mark(k: str, t_from: float):
         sub[k] = round((time.time() - t_from) * 1000)
+
+    def _write_gate():
+        """**任何一次写请求（含重试）前**都要过的闸门。
+
+        🔴 重试也必须过闸门：`_post` 内部的退避重试原先绕过了它，而多线程的
+           退避时长相同 ⇒ 重试请求**同步撞车**、继续吃 429（实测 47/81 的
+           失败源于此）。`_post(retry_gate=…)` 现在每次重试都回调这里。
+        🔴 复查配额信号与闸门同处：`gate` 是**按出口**的串行点，放在它后面才
+           看得到前序请求的结果（见函数 docstring）。
+        """
+        if gate:
+            gate(quota_scope)
+        if should_stop is not None and should_stop():
+            raise _QuotaAbort(f"已确认 {QUOTA_MSG_CODE}（累计配额触顶），未发注册请求")
 
     try:
         t = time.time()
@@ -489,18 +565,13 @@ def stage_register(
         mark("username", t)
 
         t = time.time()
-        if gate:
-            gate()  # 限速：两次 register/byEmail 之间至少 REG_MIN_INTERVAL
+        _write_gate()  # 限速：两次 register/byEmail 之间至少 REG_MIN_INTERVAL
         mark("gate_wait", t)
 
-        # 最后一道闸：过了限速闸门（全局串行点）再看一眼配额信号。
-        # 放这里才看得到前序请求的结果 —— 理由见本函数 docstring。
-        if should_stop is not None and should_stop():
-            raise _QuotaAbort(f"已确认 {QUOTA_MSG_CODE}（累计配额触顶），未发注册请求")
-
         t = time.time()
-        reg = sso.register(rec.username, rec.email, rec.password)
+        reg = sso.register(rec.username, rec.email, rec.password, retry_gate=_write_gate)
         mark("register_call", t)
+        _merge_sso_stats(sso, sub)  # 解盾耗时 / 重试次数 / 429 数
         if not reg.ok:
             detail = f"{reg.msg_code} {reg.msg}".strip()
             # 打标而不是在这里处理：stage_register 是单账号函数，
@@ -521,6 +592,7 @@ def stage_register(
         rec.status = "skipped"
         rec.error = f"quota guard: {ex}"
         rec.error_kind = ERR_QUOTA_GUARD
+        _merge_sso_stats(sso, sub)
         rec.timings["register"] = round((time.time() - t0) * 1000)
         rec.timings["register_detail"] = sub
         log("跳过（配额保护）")
@@ -532,6 +604,7 @@ def stage_register(
         #    这里若无条件覆盖，`ERR_QUOTA` 会被冲成 `ERR_NETWORK`。
         #    （它的异常类型是 `RuntimeError`，会被这个 `except Exception` 接到。）
         rec.error_kind = rec.error_kind or ERR_NETWORK
+        _merge_sso_stats(sso, sub)
         rec.timings["register"] = round((time.time() - t0) * 1000)
         rec.timings["register_detail"] = sub
         return False
@@ -568,7 +641,7 @@ def stage_register(
             raise RuntimeError("activation link not found in mail")
 
         t = time.time()
-        if not sso.activate_from_url(link):
+        if not sso.activate_from_url(link, retry_gate=_write_gate):
             rec.error_kind = ERR_REJECTED
             raise RuntimeError("activate returned success=false")
         mark("activate_call", t)
@@ -580,10 +653,12 @@ def stage_register(
         # 上面三处 `raise` 都是"服务端行为不符合预期"，已在抛出点打好标；
         # 这里只兜底 `wait_for_mail` 自己抛的网络异常（`or` 不能省，理由同上）。
         rec.error_kind = rec.error_kind or ERR_NETWORK
+        _merge_sso_stats(sso, sub, prefix="activate_")
         rec.timings["register"] = round((time.time() - t0) * 1000)
         rec.timings["register_detail"] = sub
         return False
 
+    _merge_sso_stats(sso, sub, prefix="activate_")
     rec.timings["register"] = round((time.time() - t0) * 1000)
     rec.timings["register_detail"] = sub
     return True
@@ -951,6 +1026,15 @@ def run_batch(
     # 注册速率由闸门钉死（register/byEmail 有写操作限流，见 REG_MIN_INTERVAL）
     reg_gate = _RateLimiter(REG_MIN_INTERVAL)
 
+    # 解盾 cookie / SSO client 按**出口**复用：
+    #   * `waf_cache` 跨模式都生效 —— 单出口模式下每账号仍各用各的 Session，
+    #     只共享 cookie **值**（不共享 `requests.Session`，避开它的跨线程问题）；
+    #     它**同时落盘**（`waf_state_path()`）⇒ 下一批 `run.py`（新进程）不用重解盾。
+    #   * `sso_pool` 只在槽位模式复用 client（租约独占 ⇒ 同一 client 同一时刻
+    #     只有一个持有者）。
+    waf_cache = WafCookieCache(path=waf_state_path(), log=lambda m: print(f"[waf] {m}", flush=True))
+    sso_pool = _SsoPool(waf_cache=waf_cache)
+
     # 运行中配额保护（fail-fast）。
     # 开跑前的检查只能看到"历史累计"，看不到"本次跑着跑着就触顶"的情况
     # （本地上限是估计值，服务端真实阈值可能更低）。所以运行中还要有个哨兵：
@@ -1017,7 +1101,9 @@ def run_batch(
             mail = make_source()
             # 🔴 proxy 必须传**具体值**给这个 client，不能改全局 `IR_PROXY` ——
             #    多个 producer 同时改全局会互相踩（见 config.apply_proxy）。
-            sso = SSOClient(proxy=(lease.url if lease else None))
+            # 🔀 按出口从池里取（同一出口复用 client + 解盾 cookie）——
+            #    这是“每账号重启一次 Chrome 解盾”被消掉的地方。
+            sso = sso_pool.get(lease.url if lease else None)
             ok = stage_register(
                 mail,
                 sso,

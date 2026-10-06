@@ -24,6 +24,7 @@ import ast
 import json
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 
 import pytest
 
@@ -79,19 +80,21 @@ class FakeMail:
 
 
 class FakeSSO:
-    def __init__(self, result=None, exc=None):
-        self.result = result
+    def __init__(self, result: RegisterResult | None = None, exc=None):
+        self.result = result or RegisterResult(ok=True)
         self.exc = exc
 
     def check_username(self, username: str) -> bool:
         return True
 
-    def register(self, username: str, email: str, password: str) -> RegisterResult:
+    def register(
+        self, username: str, email: str, password: str, *, retry_gate=None
+    ) -> RegisterResult:
         if self.exc:
             raise self.exc
         return self.result
 
-    def activate_from_url(self, url: str) -> bool:
+    def activate_from_url(self, url: str, *, retry_gate=None) -> bool:
         return True
 
 
@@ -101,8 +104,13 @@ def quiet(monkeypatch):
     monkeypatch.setattr(pipeline.quota, "record", lambda *a, **k: None)
 
 
-def _run(rec, *, mail=None, sso=None, **kw) -> bool:
-    """跑一次 `stage_register`，日志静音。"""
+def _run(rec, *, mail: Any | None = None, sso: Any | None = None, **kw) -> bool:
+    """跑一次 `stage_register`，日志静音。
+
+    `mail` / `sso` 标 `Any`：它们是**故意的无类型替身**，结构上刻意不等于
+    `MailboxSource` / `SSOClient`（只实现 `stage_register` 会调到的业务方法，
+    多一个都不给）—— 这样“实现偷偷多调一个接口”会当场 `AttributeError`。
+    """
     return stage_register(mail or FakeMail(), sso or FakeSSO(RegisterResult(ok=True)),
                           rec, log=lambda _m: None, **kw)
 

@@ -97,7 +97,7 @@ ledger/                 🔒 账号台账（gitignored，**含明文账号 / 密
                             ← **读源 = 最新那一份**（路径由 ledger.ledger_path() 算）
     latest.json             **本批结果**（含失败 / 跳过）；⚠ 不是读源
 .workbuddy-ai/          🔒 本地私密数据（gitignored，全部不发布）
-    state/                  运行态（配额台账）
+    state/                  运行态（配额台账 / 池子冷却 / **WAF 解盾 cookie**）
     tmp/                    临时文件、批次日志（含邮箱/账号）
     exports/                探测报告、Key 导出
     proxypool/              mihomo 槽位配置 + slots.txt（**含节点账密**）
