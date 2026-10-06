@@ -18,9 +18,9 @@ jobs:
   lint:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.11"
 
@@ -38,9 +38,9 @@ jobs:
       matrix:
         python-version: ["3.11", "3.13"]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: ${{ matrix.python-version }}
 
@@ -67,7 +67,8 @@ jobs:
       #    🔴 这份清单有**三处**必须同步，改一处就要改全：
       #        1. 这里
       #        2. `tests/test_dependency_surface.py` 的 `ALLOWED`
-      #        3. `pyproject.toml` 的 `dependencies` / `optional-dependencies.dev`
+      #        3. `pyproject.toml` 的 `dependencies` /
+      #           `optional-dependencies.dev`
       - name: 安装测试依赖
         run: pip install "pytest>=8" "requests>=2.31" "cryptography>=42.0"
 
